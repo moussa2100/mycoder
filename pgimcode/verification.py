@@ -9,7 +9,6 @@ from typing import Callable
 
 from pgimcode.tools.shell import ShellRunner
 from pgimcode.tools.test_runner import run_tests, TestResult
-from pgimcode.tools.edit import EditResult
 
 
 @dataclass

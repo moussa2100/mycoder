@@ -1,7 +1,7 @@
 """Tool Runtime layer for pgimcode.
 
-Keep package imports lightweight so submodules like ``pgimcode.tools.edit`` do not
-eagerly pull in optional symbol-analysis dependencies.
+Keep package imports lightweight so submodules do not eagerly pull in
+optional symbol-analysis dependencies.
 """
 
 from __future__ import annotations
@@ -23,11 +23,6 @@ _EXPORTS = {
     "RankedFile": ("pgimcode.tools.ranker", "RankedFile"),
     "extract_keywords": ("pgimcode.tools.ranker", "extract_keywords"),
     "rank_files_by_relevance": ("pgimcode.tools.ranker", "rank_files_by_relevance"),
-    "EditResult": ("pgimcode.tools.edit", "EditResult"),
-    "replace_block": ("pgimcode.tools.edit", "replace_block"),
-    "patch_file": ("pgimcode.tools.edit", "patch_file"),
-    "create_file": ("pgimcode.tools.edit", "create_file"),
-    "delete_file": ("pgimcode.tools.edit", "delete_file"),
     "DiffResult": ("pgimcode.tools.diff", "DiffResult"),
     "make_diff": ("pgimcode.tools.diff", "make_diff"),
     "diff_preview": ("pgimcode.tools.diff", "diff_preview"),
@@ -66,12 +61,6 @@ __all__ = [
     "RankedFile",
     "extract_keywords",
     "rank_files_by_relevance",
-    # edit
-    "EditResult",
-    "replace_block",
-    "patch_file",
-    "create_file",
-    "delete_file",
     # diff
     "DiffResult",
     "make_diff",

@@ -44,24 +44,36 @@ class RealAgent:
         self._workspace_root = self._resolve_root()
 
     async def run(self) -> None:
-        """Run the graph-first runtime engine and surface failures as events."""
-        from pgimcode.runtime.engine import GraphRuntimeEngine
+        """Run the deepagents orchestrator and surface failures as events."""
+        from pgimcode.agents.orchestrator import create_orchestrator
 
         try:
-            engine = GraphRuntimeEngine(
-                bus=self._bus,
+            await self._bus.publish(Event(
+                id=_new_ulid(),
                 session_id=self._session_id,
-                task=self._task,
-                mode=self._mode,
-                settings=self._settings,
-                renderer=self.renderer,
-                context_manager=self.context_manager,
-                recent_files=self._recent_files,
-                conversation_history=self._conversation_history,
-            )
-            result = await engine.run()
-            if result.status == "failed":
-                raise RuntimeError(result.final_message or "Task failed")
+                type=EventType.SESSION_STARTED,
+                step=0,
+                status="in_progress",
+                details=f"Starting task: {self._task}",
+            ))
+
+            agent = create_orchestrator(self._settings, workspace_root=self._workspace_root)
+            initial = {"messages": [{"role": "user", "content": self._build_task_input()}]}
+            config = {"configurable": {"thread_id": self._session_id}}
+
+            if self.renderer and hasattr(self.renderer, "on_assistant_token"):
+                await self._run_streaming(agent, initial, config)
+            else:
+                await self._run_updates_only(agent, initial, config)
+
+            await self._bus.publish(Event(
+                id=_new_ulid(),
+                session_id=self._session_id,
+                type=EventType.COMPLETED,
+                step=0,
+                status="done",
+                details="Task completed",
+            ))
 
         except Exception as e:
             await self._bus.publish(Event(
@@ -73,6 +85,32 @@ class RealAgent:
                 details=f"Error: {e}",
             ))
             raise
+
+    def _build_task_input(self) -> str:
+        """Prepend session carryover (recent files, prior successes) to the task."""
+        lines: list[str] = []
+        successes = [t for t, ok in self._conversation_history if ok][-3:]
+        if successes:
+            lines.append("Recent successful requests:")
+            for item in successes:
+                lines.append(f"- {item}")
+        if self._recent_files:
+            if lines:
+                lines.append("")
+            lines.append("Recent changed files:")
+            for path in self._recent_files[-8:]:
+                lines.append(f"- {path}")
+        if self.context_manager is not None:
+            pinned = getattr(self.context_manager, "pinned", [])[-5:]
+            if pinned:
+                if lines:
+                    lines.append("")
+                lines.append("Pinned session context:")
+                for item in pinned:
+                    lines.append(f"- {getattr(item, 'text', str(item))}")
+        if not lines:
+            return self._task
+        return self._task + "\n\nRelevant session context:\n" + "\n".join(lines)
 
     async def _run_streaming(self, agent, initial, config) -> None:
         """Stream tokens + tool calls + tool results directly to a streaming renderer."""

@@ -3,13 +3,174 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Document</title>
+    <title>Expense Tracker</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
-<body class="bg-gray-100 flex items-center justify-center min-h-screen">
-    <div class="text-center space-y-4">
-        <p class="text-2xl font-bold text-blue-600">hello world</p>
-        <p class="text-xl text-green-600">Hello Mohamed Moussa</p>
+<body class="bg-gray-100 min-h-screen">
+    <div x-data="expenseTracker()" class="max-w-4xl mx-auto p-6">
+        <h1 class="text-3xl font-bold text-gray-800 mb-8 text-center">💰 Expense Tracker</h1>
+
+        <!-- Add / Edit Expense Form -->
+        <div class="bg-white rounded-xl shadow-md p-6 mb-8">
+            <h2 class="text-xl font-semibold text-gray-700 mb-4" x-text="editingId ? '✏️ Edit Expense' : 'Add New Expense'"></h2>
+            <form @submit.prevent="editingId ? updateExpense() : addExpense()" class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Description</label>
+                    <input type="text" x-model="form.description" placeholder="e.g. Groceries"
+                           class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Amount ($)</label>
+                    <input type="number" x-model="form.amount" placeholder="0.00" step="0.01" min="0"
+                           class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Category</label>
+                    <select x-model="form.category"
+                            class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                        <option value="">Select...</option>
+                        <option>Food</option>
+                        <option>Transport</option>
+                        <option>Entertainment</option>
+                        <option>Utilities</option>
+                        <option>Shopping</option>
+                        <option>Other</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Date</label>
+                    <input type="date" x-model="form.date"
+                           class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" required>
+                </div>
+                <div class="md:col-span-4 flex gap-2">
+                    <button type="submit"
+                            class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition duration-200"
+                            x-text="editingId ? '💾 Update Expense' : '➕ Add Expense'">
+                    </button>
+                    <button type="button" x-show="editingId" @click="cancelEdit"
+                            class="flex-1 bg-gray-500 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg transition duration-200">
+                        ✖ Cancel
+                    </button>
+                </div>
+            </form>
+        </div>
+
+        <!-- Expense List -->
+        <div class="bg-white rounded-xl shadow-md p-6 mb-8">
+            <h2 class="text-xl font-semibold text-gray-700 mb-4">📋 Expenses</h2>
+            <template x-if="expenses.length === 0">
+                <p class="text-gray-500 text-center py-8">No expenses yet. Add one above!</p>
+            </template>
+            <template x-if="expenses.length > 0">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left">
+                        <thead>
+                            <tr class="border-b-2 border-gray-200">
+                                <th class="pb-3 text-gray-600 font-medium">Description</th>
+                                <th class="pb-3 text-gray-600 font-medium">Amount</th>
+                                <th class="pb-3 text-gray-600 font-medium">Category</th>
+                                <th class="pb-3 text-gray-600 font-medium">Date</th>
+                                <th class="pb-3 text-gray-600 font-medium">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <template x-for="(expense, index) in expenses" :key="index">
+                                <tr class="border-b border-gray-100 hover:bg-gray-50">
+                                    <td class="py-3 text-gray-800" x-text="expense.description"></td>
+                                    <td class="py-3 text-gray-800" x-text="'$' + parseFloat(expense.amount).toFixed(2)"></td>
+                                    <td class="py-3">
+                                        <span class="bg-blue-100 text-blue-800 text-sm font-medium px-2.5 py-0.5 rounded" x-text="expense.category"></span>
+                                    </td>
+                                    <td class="py-3 text-gray-600" x-text="expense.date"></td>
+                                    <td class="py-3 flex gap-2">
+                                        <button @click="editExpense(index)"
+                                                class="bg-yellow-500 hover:bg-yellow-600 text-white text-sm font-medium py-1 px-3 rounded-lg transition duration-200">
+                                            ✏️ Edit
+                                        </button>
+                                        <button @click="deleteExpense(index)"
+                                                class="bg-red-500 hover:bg-red-600 text-white text-sm font-medium py-1 px-3 rounded-lg transition duration-200">
+                                            🗑️ Delete
+                                        </button>
+                                    </td>
+                                </tr>
+                            </template>
+                        </tbody>
+                    </table>
+                </div>
+            </template>
+        </div>
+
+        <!-- Total -->
+        <div class="bg-white rounded-xl shadow-md p-6 text-center">
+            <p class="text-lg text-gray-600">Total Expenses</p>
+            <p class="text-4xl font-bold text-gray-800" x-text="'$' + total().toFixed(2)"></p>
+        </div>
     </div>
+
+    <script>
+        function expenseTracker() {
+            return {
+                expenses: [],
+                editingId: null,
+                form: {
+                    description: '',
+                    amount: '',
+                    category: '',
+                    date: ''
+                },
+                addExpense() {
+                    if (!this.form.description || !this.form.amount || !this.form.category || !this.form.date) return;
+                    this.expenses.push({
+                        description: this.form.description,
+                        amount: parseFloat(this.form.amount),
+                        category: this.form.category,
+                        date: this.form.date
+                    });
+                    this.resetForm();
+                },
+                editExpense(index) {
+                    const expense = this.expenses[index];
+                    this.editingId = index;
+                    this.form.description = expense.description;
+                    this.form.amount = expense.amount;
+                    this.form.category = expense.category;
+                    this.form.date = expense.date;
+                },
+                updateExpense() {
+                    if (this.editingId === null) return;
+                    if (!this.form.description || !this.form.amount || !this.form.category || !this.form.date) return;
+                    this.expenses[this.editingId] = {
+                        description: this.form.description,
+                        amount: parseFloat(this.form.amount),
+                        category: this.form.category,
+                        date: this.form.date
+                    };
+                    this.cancelEdit();
+                },
+                cancelEdit() {
+                    this.editingId = null;
+                    this.resetForm();
+                },
+                deleteExpense(index) {
+                    this.expenses.splice(index, 1);
+                    if (this.editingId === index) {
+                        this.cancelEdit();
+                    } else if (this.editingId > index) {
+                        this.editingId--;
+                    }
+                },
+                resetForm() {
+                    this.form.description = '';
+                    this.form.amount = '';
+                    this.form.category = '';
+                    this.form.date = '';
+                },
+                total() {
+                    return this.expenses.reduce((sum, e) => sum + parseFloat(e.amount), 0);
+                }
+            }
+        }
+    </script>
 </body>
 </html>
