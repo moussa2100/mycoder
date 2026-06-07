@@ -109,25 +109,25 @@ STEP_TEMPLATES: dict[str, list[Step]] = {
     "add new functionality": [
         Step("Inspect repository structure", tool="search", reasoning="Understand where changes should go"),
         Step("Read relevant files", tool="read", reasoning="Understand existing patterns"),
-        Step("Plan implementation", tool="ask", reasoning="Design the change"),
+        Step("Build evidence-backed plan", tool="ask", reasoning="Design the change with repository evidence"),
         Step("Implement changes", tool="edit", reasoning="Apply the planned edits"),
-        Step("Run tests", tool="test", reasoning="Verify correctness"),
-        Step("Final verification", tool="verify", reasoning="Check no regressions"),
+        Step("Run verification", tool="verify", reasoning="Verify correctness"),
+        Step("Self-review", tool="verify", reasoning="Check residual risk and unintended impact"),
     ],
     "fix a bug": [
         Step("Search for bug location", tool="search", reasoning="Find where the bug manifests"),
         Step("Read relevant code", tool="read", reasoning="Understand root cause"),
-        Step("Reproduce bug", tool="test", reasoning="Confirm the issue"),
+        Step("Build bug hypothesis", tool="ask", reasoning="Confirm the issue with evidence"),
         Step("Fix the bug", tool="edit", reasoning="Apply minimal fix"),
-        Step("Run tests", tool="test", reasoning="Verify fix works"),
-        Step("Regression check", tool="verify", reasoning="Check side effects"),
+        Step("Run verification", tool="verify", reasoning="Verify fix works"),
+        Step("Regression review", tool="verify", reasoning="Check side effects"),
     ],
     "restructure code": [
         Step("Inspect current structure", tool="search", reasoning="Map dependencies"),
         Step("Read affected files", tool="read", reasoning="Understand what changes"),
-        Step("Plan refactoring", tool="ask", reasoning="Design new structure"),
+        Step("Plan refactoring", tool="ask", reasoning="Design new structure from evidence"),
         Step("Apply refactoring", tool="edit", reasoning="Move/rename/update code"),
-        Step("Run tests", tool="test", reasoning="Verify nothing broke"),
+        Step("Run verification", tool="verify", reasoning="Verify nothing broke"),
         Step("Final check", tool="verify", reasoning="Validate improvements"),
     ],
     "add or fix tests": [
@@ -140,9 +140,9 @@ STEP_TEMPLATES: dict[str, list[Step]] = {
     "update existing behavior": [
         Step("Find current implementation", tool="search", reasoning="Locate code to update"),
         Step("Read existing code", tool="read", reasoning="Understand current behavior"),
-        Step("Plan changes", tool="ask", reasoning="Design update"),
+        Step("Plan changes", tool="ask", reasoning="Design update with evidence"),
         Step("Apply update", tool="edit", reasoning="Modify code"),
-        Step("Run tests", tool="test", reasoning="Verify changes"),
+        Step("Run verification", tool="verify", reasoning="Verify changes"),
         Step("Verify no regressions", tool="verify", reasoning="Check side effects"),
     ],
     "remove functionality": [
@@ -150,7 +150,7 @@ STEP_TEMPLATES: dict[str, list[Step]] = {
         Step("Read affected code", tool="read", reasoning="Understand impact"),
         Step("Remove code", tool="edit", reasoning="Delete safely"),
         Step("Update dependents", tool="edit", reasoning="Remove references"),
-        Step("Run tests", tool="test", reasoning="Verify nothing broken"),
+        Step("Run verification", tool="verify", reasoning="Verify nothing broken"),
     ],
 }
 
@@ -219,7 +219,7 @@ class TaskPlanner:
         constraints = []
         task_lower = task.lower()
         if "without breaking" in task_lower or "no regression" in task_lower:
-            constraints.append("Must not break existing tests")
+            constraints.append("Must not break existing behavior")
         if "minimal" in task_lower or "small" in task_lower:
             constraints.append("Should make minimal changes")
         if "quick" in task_lower or "fast" in task_lower:
@@ -230,27 +230,26 @@ class TaskPlanner:
             rest = task[idx + 5:].strip().split()[0]
             if rest:
                 constraints.append(f"Must use {rest}")
-        if self.repo_map and self.repo_map.test_locations:
-            constraints.append("Must ensure tests pass")
+        constraints.append("Must complete verification before reporting success")
         return constraints
 
     def _derive_acceptance(self, verb: str, objective: str) -> list[str]:
         if verb == "add new functionality":
             return [
                 "Feature is implemented correctly",
-                "All tests pass",
+                "Verification checks pass",
                 "No regressions introduced",
             ]
         elif verb == "fix a bug":
             return [
                 "Bug is resolved",
-                "Reproduction test passes",
+                "Bug hypothesis is no longer reproduced",
                 "No new regressions",
             ]
         elif verb == "restructure code":
             return [
                 "Code is restructured as planned",
-                "All tests pass",
+                "Verification checks pass",
                 "No behavioral changes",
             ]
         elif verb == "add or fix tests":
@@ -263,12 +262,12 @@ class TaskPlanner:
             return [
                 "Feature is removed cleanly",
                 "No dangling references",
-                "All tests pass",
+                "Verification checks pass",
             ]
         else:
             return [
                 "Changes implemented correctly",
-                "All tests pass",
+                "Verification checks pass",
                 "No regressions",
             ]
 

@@ -1,7 +1,6 @@
 """LangGraph builder and compiler for the pgimcode agent."""
 
-from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
+from typing import Any
 
 from pgimcode.graph.state import AgentState
 from pgimcode.graph.nodes import (
@@ -15,8 +14,17 @@ from pgimcode.graph.nodes import (
 )
 
 
-def build_graph(max_turns: int = 50) -> StateGraph:
+def build_graph(max_turns: int = 50) -> Any:
     """Build and compile the agent StateGraph with LLM-powered decision + tool execution."""
+    try:
+        from langgraph.checkpoint.memory import MemorySaver
+        from langgraph.graph import END, START, StateGraph
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Real graph mode requires the optional LangGraph runtime dependencies. "
+            "Install the project runtime dependencies with Poetry before using --real."
+        ) from exc
+
     builder = StateGraph(AgentState)
 
     builder.add_node("intake", intake_node)

@@ -275,6 +275,15 @@ class ChatRenderer:
 
     def _get_label(self, event: Event) -> str:
         """Return a short label for the event type/status."""
+        if event.type in (
+            EventType.RESEARCH_STARTED,
+            EventType.EVIDENCE_CAPTURED,
+            EventType.TASK_UPDATED,
+            EventType.SELF_REVIEW_STARTED,
+            EventType.SELF_REVIEW_COMPLETED,
+            EventType.MILESTONE_REACHED,
+        ):
+            return "INFO" if event.status == "done" else "-"
         if event.status == "done":
             if event.type == EventType.COMPLETED:
                 return "OK"
@@ -312,6 +321,8 @@ class ChatSession:
         self._approval_gate = approval_gate
         self._session_id: str = ""
         self._history: list[tuple[str, bool]] = []  # (task, success)
+        self._recent_changed_files: list[str] = []
+        self._context_manager = None
         self._running = False
         self._plan_only = False
         self._use_real = use_real
@@ -327,6 +338,9 @@ class ChatSession:
         store = SessionStore()
         session = store.create(task="Chat session", mode="build")
         self._session_id = session.id
+        from pgimcode.context import ContextManager
+
+        self._context_manager = ContextManager(session_id=self._session_id)
 
         renderer = ChatRenderer(
             console=self._console,
@@ -340,6 +354,15 @@ class ChatSession:
 
         def _on_event(event: Event) -> None:
             renderer.add_event(event)
+            if self._context_manager is not None:
+                self._context_manager.add(event)
+            snapshot = event.data or {}
+            for path in snapshot.get("changed_files", [])[:8]:
+                if path and path not in self._recent_changed_files:
+                    self._recent_changed_files.append(path)
+                    self._recent_changed_files = self._recent_changed_files[-12:]
+                    if self._context_manager is not None:
+                        self._context_manager.pin(f"Recent changed file: {path}", "active_file", event.step)
 
         bus.subscribe(_on_event)
 
@@ -496,18 +519,20 @@ class ChatSession:
 
         if can_use_real:
             from pgimcode.agent import RealAgent
-            from pgimcode.context import ContextManager
 
-            context_manager = ContextManager(session_id=self._session_id)
+            context_manager = self._context_manager or ContextManager(session_id=self._session_id)
             context_manager.pin(f"Task: {task}", "goal", 0)
 
             agent = RealAgent(
                 bus=bus,
                 session_id=self._session_id,
                 task=task,
+                context_manager=context_manager,
                 mode="build",
                 settings=self._settings,
                 renderer=renderer,
+                recent_files=list(self._recent_changed_files),
+                conversation_history=list(self._history),
             )
             try:
                 await agent.run()

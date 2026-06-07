@@ -20,10 +20,17 @@ _EVENT_ICONS: dict[EventType, str] = {
     EventType.SESSION_STARTED: "🚀",
     EventType.REPO_SCANNING: "🔍",
     EventType.FILE_READING: "📄",
+    EventType.RESEARCH_STARTED: "🧭",
+    EventType.EVIDENCE_CAPTURED: "🧠",
     EventType.PLANNING_STARTED: "📝",
     EventType.PATCH_APPLYING: "🔧",
     EventType.TESTS_RUNNING: "🧪",
     EventType.VERIFICATION_STARTED: "🔒",
+    EventType.TASK_UPDATED: "📋",
+    EventType.DIFF_READY: "🧩",
+    EventType.SELF_REVIEW_STARTED: "🔎",
+    EventType.SELF_REVIEW_COMPLETED: "🛡️",
+    EventType.MILESTONE_REACHED: "🏁",
     EventType.BLOCKED_FOR_APPROVAL: "🛑",
     EventType.COMPLETED: "✅",
     EventType.FAILED: "❌",
@@ -141,11 +148,19 @@ class RichTerminalRenderer:
         current_event = self._events[-1] if self._events else None
         if current_event:
             elapsed = int(time.time() - self._start_time)
+            snapshot = current_event.data or {}
             step_text = Text()
             step_text.append(f"{self._get_icon(current_event)} ", style=self._get_color(current_event))
             step_text.append(f"{current_event.type.value}\n", style="bold")
             step_text.append(f"{current_event.details or 'No details'}\n", style="white")
-            step_text.append(f"Step {current_event.step}/8 | ", style="dim")
+            candidate_files = snapshot.get("candidate_files", [])
+            evidence_count = snapshot.get("evidence_count", 0)
+            if candidate_files or evidence_count:
+                step_text.append(
+                    f"Candidates {len(candidate_files)} | Evidence {evidence_count} | ",
+                    style="dim cyan",
+                )
+            step_text.append(f"Step {current_event.step} | ", style="dim")
             step_text.append(f"Elapsed {elapsed}s", style="dim")
 
             current_step_panel = Panel(

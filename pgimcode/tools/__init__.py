@@ -1,42 +1,52 @@
-"""Tool Runtime layer for pgimcode."""
+"""Tool Runtime layer for pgimcode.
 
-from pgimcode.tools.read import (
-    ReadResult,
-    read_file,
-    read_file_chunk,
-    file_exists,
-    count_lines,
-)
-from pgimcode.tools.grep import (
-    GrepResult,
-    rg_search,
-    rg_search_symbol,
-)
-from pgimcode.tools.symbols import (
-    find_symbol,
-    find_references,
-)
-from pgimcode.tools.ranker import (
-    RankedFile,
-    extract_keywords,
-    rank_files_by_relevance,
-)
-from pgimcode.tools.edit import (
-    EditResult,
-    replace_block,
-    patch_file,
-    create_file,
-    delete_file,
-)
-from pgimcode.tools.diff import (
-    DiffResult,
-    make_diff,
-    diff_preview,
-)
-from pgimcode.tools.snapshot import (
-    Snapshot,
-    SnapshotManager,
-)
+Keep package imports lightweight so submodules like ``pgimcode.tools.edit`` do not
+eagerly pull in optional symbol-analysis dependencies.
+"""
+
+from __future__ import annotations
+
+from importlib import import_module
+
+
+_EXPORTS = {
+    "ReadResult": ("pgimcode.tools.read", "ReadResult"),
+    "read_file": ("pgimcode.tools.read", "read_file"),
+    "read_file_chunk": ("pgimcode.tools.read", "read_file_chunk"),
+    "file_exists": ("pgimcode.tools.read", "file_exists"),
+    "count_lines": ("pgimcode.tools.read", "count_lines"),
+    "GrepResult": ("pgimcode.tools.grep", "GrepResult"),
+    "rg_search": ("pgimcode.tools.grep", "rg_search"),
+    "rg_search_symbol": ("pgimcode.tools.grep", "rg_search_symbol"),
+    "find_symbol": ("pgimcode.tools.symbols", "find_symbol"),
+    "find_references": ("pgimcode.tools.symbols", "find_references"),
+    "RankedFile": ("pgimcode.tools.ranker", "RankedFile"),
+    "extract_keywords": ("pgimcode.tools.ranker", "extract_keywords"),
+    "rank_files_by_relevance": ("pgimcode.tools.ranker", "rank_files_by_relevance"),
+    "EditResult": ("pgimcode.tools.edit", "EditResult"),
+    "replace_block": ("pgimcode.tools.edit", "replace_block"),
+    "patch_file": ("pgimcode.tools.edit", "patch_file"),
+    "create_file": ("pgimcode.tools.edit", "create_file"),
+    "delete_file": ("pgimcode.tools.edit", "delete_file"),
+    "DiffResult": ("pgimcode.tools.diff", "DiffResult"),
+    "make_diff": ("pgimcode.tools.diff", "make_diff"),
+    "diff_preview": ("pgimcode.tools.diff", "diff_preview"),
+    "Snapshot": ("pgimcode.tools.snapshot", "Snapshot"),
+    "SnapshotManager": ("pgimcode.tools.snapshot", "SnapshotManager"),
+}
+
+
+def __getattr__(name: str):
+    target = _EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module 'pgimcode.tools' has no attribute {name!r}")
+    module_name, attr_name = target
+    module = import_module(module_name)
+    return getattr(module, attr_name)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(_EXPORTS))
 
 __all__ = [
     # read

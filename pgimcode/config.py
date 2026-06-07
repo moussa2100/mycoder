@@ -29,6 +29,10 @@ class Settings(BaseSettings):
 
     # Agents
     default_mode: str = "build"
+    intelligence_mode: str = "graph"
+    research_depth: str = "standard"
+    task_board_enabled: bool = True
+    self_review_enabled: bool = True
 
     # LLM settings
     openai_api_key: str | None = None

@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
-from langchain_openai import ChatOpenAI
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
-
-from pgimcode.graph.state import AgentState
 from pgimcode.graph.tools import TOOL_DEFINITIONS, call_tool
 from pgimcode.discovery.repo_scanner import RepoScanner
 from pgimcode.discovery.repo_map import build_repo_map
 from pgimcode.discovery.language_detector import annotate_languages
+from pgimcode.intelligence.context_assembler import assemble_prompt_context
+from pgimcode.intelligence.evidence import compress_evidence, record_tool_evidence
+from pgimcode.intelligence.investigation import build_investigation_packet
+from pgimcode.intelligence.task_board import mark_stage
+from pgimcode.prompts.policies import build_policy_block
+from pgimcode.retrieval.hybrid_ranker import hybrid_rank_files
 from pgimcode.tools.ranker import rank_files_by_relevance
 from pgimcode.planner import TaskPlanner
-from pgimcode.events import EventType
 from pgimcode.config import Settings
 
 
@@ -43,10 +44,12 @@ def _get_settings(state) -> Settings:
     return Settings()
 
 
-_llm_cache: dict[str, ChatOpenAI] = {}
+_llm_cache: dict[str, Any] = {}
 
 
-def _build_llm(state) -> ChatOpenAI:
+def _build_llm(state) -> Any:
+    from langchain_openai import ChatOpenAI
+
     settings = _get_settings(state)
     provider = settings.resolve_provider()
 
@@ -93,6 +96,8 @@ def _build_system_prompt(state: dict) -> str:
     if plan:
         steps = plan.get("steps", [])
         plan_steps = "\n".join(f"  {i+1}. {s.get('description', '')}" for i, s in enumerate(steps[:10]))
+    dynamic_context = assemble_prompt_context(state)
+    policies = build_policy_block()
 
     return f"""You are pgimcode, a terminal AI coding assistant. You help users with software engineering tasks by reading, editing, and creating code files in their workspace.
 
@@ -110,17 +115,33 @@ def _build_system_prompt(state: dict) -> str:
 ## Plan
 {plan_steps if plan_steps else 'No plan generated yet.'}
 
+{dynamic_context if dynamic_context else ''}
+
+{policies}
+
 ## Critical Instructions
-1. **ALWAYS read a file before editing it.** Use read_file to understand the current contents.
-2. **If a search returns no results, try reading the target file directly** or try a different search query. Don't give up after one empty search.
-3. **Use write_file to create new files, read_file to read existing files, edit_replace_block to modify.**
+1. **Always investigate before editing.** Gather evidence and identify the likely blast radius first.
+2. **Always read a file before editing it.** Use `read_file` or `read_chunk` to understand the current contents.
+3. **If a search returns no results, broaden the search** or inspect the likely candidate files directly.
 4. **Make focused, minimal changes.** Don't rewrite entire files if a small edit will do.
-5. **When asked to style/modify HTML:** read the file first, then apply changes using edit_replace_block.
-6. **After completing the task, verify with a brief summary.**
-7. **Work step by step.** Read first, then plan, then execute.
-8. **Never say 'Done' without actually making the requested changes.** If you need more information, use tools to find it.
+5. **Track progress explicitly.** Use the task board and evidence state to stay oriented.
+6. **After editing, verify and self-review.** Name the changed files, what was checked, and remaining risk.
+7. **Never say 'done' without concrete evidence.** If information is missing, use tools to find it.
 
 Be persistent. Complete the full task — don't stop halfway."""
+
+
+def _build_research_task(task: str, state: dict) -> str:
+    recent_files = state.get("recent_files", [])
+    carryover_context = (state.get("carryover_context", "") or "").strip()
+    hints: list[str] = []
+    if recent_files:
+        hints.append("Recent files: " + ", ".join(recent_files[:6]))
+    if carryover_context:
+        hints.append(carryover_context)
+    if not hints:
+        return task
+    return task + "\n\nRelevant session context:\n" + "\n".join(f"- {item}" for item in hints)
 
 
 # ─────────────────────────────────────────────────────────────
@@ -176,12 +197,14 @@ def planning_node(state) -> dict:
     s = _to_dict(state)
     current = s.get("turn", 0)
     task = s.get("task", "")
+    research_task = _build_research_task(task, s)
     repo_map_dict = s.get("repo_map")
     root = _get_workspace_root()
     scanner = RepoScanner(root=root)
     files = scanner.scan()
     files = annotate_languages(files)
-    ranked = rank_files_by_relevance(task, files, root, max_results=20)
+    ranked = rank_files_by_relevance(research_task, files, root, max_results=20)
+    hybrid_hits = hybrid_rank_files(research_task, files, root, max_results=12, preferred_paths=s.get("recent_files", []))
     from pgimcode.discovery.repo_map import RepoMap
     if repo_map_dict:
         repo_map_for_planner = RepoMap(
@@ -201,6 +224,9 @@ def planning_node(state) -> dict:
         repo_map_for_planner = build_repo_map(scanner)
     planner = TaskPlanner(repo_map=repo_map_for_planner, ranked_files=ranked)
     plan = planner.plan(task)
+    candidate_files = [hit.to_dict() for hit in hybrid_hits]
+    investigation = build_investigation_packet(task, repo_map_for_planner, candidate_files)
+    plan.files_to_inspect = [item.get("path", "") for item in candidate_files[:8]]
     plan_dict = {
         "task": plan.task,
         "interpretation": plan.interpretation,
@@ -221,6 +247,15 @@ def planning_node(state) -> dict:
         "turn": current + 1,
         "current_node": "decision",
         "plan": plan_dict,
+        "research_goals": investigation["research_goals"],
+        "hypotheses": investigation["hypotheses"],
+        "evidence": compress_evidence(investigation["evidence"]),
+        "candidate_files": investigation["candidate_files"],
+        "open_questions": investigation["open_questions"],
+        "blast_radius": investigation["blast_radius"],
+        "verification_plan": investigation["verification_plan"],
+        "task_board": investigation["task_board"],
+        "query_intent": investigation["query_intent"],
     }
 
 
@@ -230,6 +265,8 @@ def planning_node(state) -> dict:
 
 def decision_node(state) -> dict:
     """Call the LLM with tools. Return next_node: tool_exec or finish."""
+    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+
     s = _to_dict(state)
     current = s.get("turn", 0)
     max_turns = s.get("max_turns", 50)
@@ -333,6 +370,8 @@ def execute_tool_node(state) -> dict:
     pending = s.get("pending_action", [])
     messages = list(s.get("messages", []))
     changed_files = list(s.get("changed_files", []))
+    evidence = list(s.get("evidence", []))
+    task_board = list(s.get("task_board", []))
 
     # Normalize: could be single dict or list of dicts
     if isinstance(pending, dict) and pending:
@@ -366,11 +405,20 @@ def execute_tool_node(state) -> dict:
             "name": tool_name,
         })
         results.append({"name": tool_name, "success": result.get("success", False), "message": result_content})
+        evidence.extend(record_tool_evidence(tool_name, tool_args, result.get("result", {})))
 
         if tool_name in ("write_file", "edit_replace_block", "edit_patch"):
             path = tool_args.get("path", "")
             if path and path not in changed_files:
                 changed_files.append(path)
+            task_board = mark_stage(task_board, "edit", "done", note=path)
+            task_board = mark_stage(task_board, "verify", "in_progress")
+        elif tool_name in ("read_file", "read_chunk", "search_text", "search_symbol", "list_files"):
+            task_board = mark_stage(task_board, "research", "done")
+            task_board = mark_stage(task_board, "plan", "in_progress")
+        elif tool_name in ("verify_file", "run_command"):
+            task_board = mark_stage(task_board, "verify", "done")
+            task_board = mark_stage(task_board, "complete", "in_progress")
 
     return {
         "turn": current + 1,
@@ -378,15 +426,19 @@ def execute_tool_node(state) -> dict:
         "last_tool_result": {"success": all(r["success"] for r in results), "result": results},
         "messages": messages,
         "changed_files": changed_files,
+        "evidence": compress_evidence(evidence),
+        "task_board": task_board,
         "pending_action": [],
     }
 
 
 def finish_node(state) -> dict:
     s = _to_dict(state)
+    task_board = mark_stage(list(s.get("task_board", [])), "complete", "done")
     return {
         "status": s.get("status", "completed"),
         "current_node": "finish",
+        "task_board": task_board,
     }
 
 

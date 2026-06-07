@@ -18,6 +18,17 @@ class AgentState(BaseModel):
     messages: list[dict] = Field(default_factory=list)
     repo_map: dict | None = None
     plan: dict | None = None
+    carryover_context: str = ""
+    recent_files: list[str] = Field(default_factory=list)
+    research_goals: list[str] = Field(default_factory=list)
+    hypotheses: list[dict] = Field(default_factory=list)
+    evidence: list[dict] = Field(default_factory=list)
+    candidate_files: list[dict] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    blast_radius: list[str] = Field(default_factory=list)
+    verification_plan: list[str] = Field(default_factory=list)
+    task_board: list[dict] = Field(default_factory=list)
+    query_intent: dict = Field(default_factory=dict)
     current_node: str = "start"
     last_tool_result: dict = Field(default_factory=dict)
     tool_calls: list[dict] = Field(default_factory=list)

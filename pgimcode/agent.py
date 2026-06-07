@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 class RealAgent:
-    """DeepAgents-powered multi-agent orchestrator."""
+    """Graph-first real agent with evented runtime orchestration."""
 
     def __init__(
         self,
@@ -26,6 +26,8 @@ class RealAgent:
         settings: Settings | None = None,
         slash_listener=None,
         renderer=None,
+        recent_files: list[str] | None = None,
+        conversation_history: list[tuple[str, bool]] | None = None,
     ):
         self._bus = bus
         self._session_id = session_id
@@ -37,66 +39,29 @@ class RealAgent:
         self._settings = settings if settings is not None else Settings()
         self.slash_listener = slash_listener
         self.renderer = renderer
+        self._recent_files = recent_files or []
+        self._conversation_history = conversation_history or []
         self._workspace_root = self._resolve_root()
 
     async def run(self) -> None:
-        """Run the agent orchestrator, publishing events as sub-agents execute."""
-        from pgimcode.agents.orchestrator import create_orchestrator
+        """Run the graph-first runtime engine and surface failures as events."""
+        from pgimcode.runtime.engine import GraphRuntimeEngine
 
-        # Phase 1: Scan repo
-        await self._emit("scanning", "Scanning repository...")
-        from pgimcode.discovery.repo_scanner import RepoScanner
-        from pgimcode.discovery.language_detector import annotate_languages
-        from pgimcode.discovery.repo_map import build_repo_map
-        scanner = RepoScanner(root=self._workspace_root)
-        scanned = annotate_languages(scanner.scan())
-        repo_map = build_repo_map(scanner)
-
-        # Phase 2: Find relevant files
-        from pgimcode.tools.ranker import rank_files_by_relevance
-        ranked = rank_files_by_relevance(self._task, scanned, self._workspace_root, max_results=20)
-
-        repo_summary = f"{repo_map.total_files} files, {repo_map.languages}"
-        top_files = "\n".join(
-            f"  /{rf.file.path.as_posix()} (score: {rf.score:.1f})"
-            for rf in ranked[:8]
-        )
-
-        context_prompt = f"""## Task
-{self._task}
-
-## Repository
-{repo_summary}
-Workspace root: /
-
-## Top Files
-{top_files if top_files else 'No files found'}
-
-## Tooling Rules
-- Use DeepAgents native tools only: `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, and `execute`.
-- Always use virtual absolute repo paths like `/frontend/index.html`.
-- Treat `/` as the repository root.
-- Never use absolute Windows paths like `C:\\...`.
-- Never invent custom pgimcode tool names like `edit_replace_block`, `list_files`, `search_text`, or `run_command`.
-
-Complete the task using the available tools. Be thorough, but keep user-facing narration concise."""
-
-        # Phase 3: Run orchestrator
         try:
-            agent = create_orchestrator(self._settings, self._workspace_root)
-            config = {"configurable": {"thread_id": self._session_id}}
-            initial = {"messages": [{"role": "user", "content": context_prompt}]}
-
-            streaming = self.renderer is not None and hasattr(
-                self.renderer, "on_assistant_token"
+            engine = GraphRuntimeEngine(
+                bus=self._bus,
+                session_id=self._session_id,
+                task=self._task,
+                mode=self._mode,
+                settings=self._settings,
+                renderer=self.renderer,
+                context_manager=self.context_manager,
+                recent_files=self._recent_files,
+                conversation_history=self._conversation_history,
             )
-
-            if streaming:
-                await self._run_streaming(agent, initial, config)
-            else:
-                await self._run_updates_only(agent, initial, config)
-
-            await self._emit("complete", "Task completed")
+            result = await engine.run()
+            if result.status == "failed":
+                raise RuntimeError(result.final_message or "Task failed")
 
         except Exception as e:
             await self._bus.publish(Event(
