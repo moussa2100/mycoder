@@ -71,20 +71,20 @@ class ChatRenderer:
         details = event.details or event.type.value
         text = Text()
         text.append("  ", style="")
-        text.append(f"[{label}]", style=f"bold {color}")
-        text.append(f" {details}", style=color)
+        text.append(label, style=f"bold {color}")
+        text.append(f"  {details}", style=color)
         self._console.print(text)
 
     def end_turn(self, success: bool = True) -> None:
         """Print elapsed time at end of turn."""
         if self._turn_start:
             elapsed = time.time() - self._turn_start
-            label = "[OK]" if success else "[FAIL]"
+            label = "OK" if success else "FAIL"
             color = "green" if success else "red"
             text = Text()
-            text.append(f"  ", style="")
+            text.append("  ", style="")
             text.append(label, style=f"bold {color}")
-            text.append(f" Done in {elapsed:.1f}s", style=color)
+            text.append(f"  Done in {elapsed:.1f}s", style=color)
             self._console.print(text)
             self._turn_start = None
 
@@ -109,7 +109,7 @@ class ChatRenderer:
         """Show model switch confirmation."""
         self._current_model = new_model
         text = Text()
-        text.append("  [MODEL] ", style="bold cyan")
+        text.append("  MODEL ", style="bold cyan")
         text.append(f"Switched to: {new_model}", style="dim")
         self._console.print(text)
 
@@ -118,18 +118,18 @@ class ChatRenderer:
         self._current_model = model_name
 
     def _get_label(self, event: Event) -> str:
-        """Return a short ASCII-safe label for the event type/status."""
+        """Return a short label for the event type/status."""
         if event.status == "done":
             if event.type == EventType.COMPLETED:
                 return "OK"
             elif event.type == EventType.FAILED:
                 return "FAIL"
-            return "DONE"
+            return "OK"
         elif event.status == "failed":
-            return "ERR"
+            return "FAIL"
         elif event.status in ("in_progress", "started"):
-            return "..."
-        return event.type.value[:4].upper()
+            return "-"
+        return "-"
 
     def _get_color(self, event: Event) -> str:
         if event.status == "done":
@@ -210,7 +210,7 @@ class ChatSession:
                 success = await self._process_task(line, bus, renderer)
                 self._history.append((line, success))
             except Exception as e:
-                self._console.print(f"  [FAIL] [red]Error: {e}[/red]")
+                self._console.print(f"  FAIL [red]Error: {e}[/red]")
 
             renderer.end_turn(success)
 
@@ -268,7 +268,7 @@ class ChatSession:
         elif cmd == "/plan":
             self._plan_only = not self._plan_only
             state = "[green]ON[/]" if self._plan_only else "[dim]OFF[/]"
-            self._console.print(f"  [PLAN] Plan-only mode: {state}")
+            self._console.print(f"  PLAN Plan-only mode: {state}")
 
         else:
             self._console.print(f"  [dim]Unknown command: {line}. Type /help for commands.[/]")
