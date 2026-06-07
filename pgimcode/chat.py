@@ -1,0 +1,399 @@
+"""Interactive chat session — Claude Code-style terminal UI."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from typing import TYPE_CHECKING
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+from rich.align import Align
+
+from pgimcode.config import Settings
+from pgimcode.events import Event, EventBus, EventType
+
+if TYPE_CHECKING:
+    from pgimcode.approval import ApprovalGate
+
+
+class ChatRenderer:
+    """Simple chat-style renderer that prints events inline (no Live display)."""
+
+    def __init__(
+        self,
+        console: Console,
+        session_id: str,
+        settings: Settings | None = None,
+    ):
+        self._console = console
+        self._session_id = session_id
+        self._settings = settings or Settings()
+        self._current_model = self._settings.model_name
+        self._turn_start: float | None = None
+
+    def show_welcome(self) -> None:
+        """Display welcome banner at chat start."""
+        self._console.print()
+        welcome = Panel(
+            Align.center(
+                f"[bold cyan]{self._settings.app_name}[/] [dim]v{self._settings.version}[/]\n"
+                f"[dim]Terminal AI Coding Assistant[/]\n\n"
+                f"[dim]Model:[/] [bold]{self._current_model}[/]\n"
+                f"[dim]Type /help for commands, /quit to exit[/]",
+                vertical="middle",
+            ),
+            border_style="cyan",
+            padding=(1, 3),
+            title="[bold]Welcome[/]",
+        )
+        self._console.print(welcome)
+        self._console.print()
+
+    def show_info(self) -> None:
+        """Show a one-line info bar with session and model."""
+        self._console.print(
+            f"[dim]{self._settings.app_name} • {self._current_model} • {self._session_id}[/]"
+        )
+
+    def start_turn(self, task: str) -> None:
+        """Print the user's task/prompt at the start of a turn."""
+        self._turn_start = time.time()
+        self._console.print()
+        self._console.print(f"  [bold bright_white]> {task}[/]")
+        self._console.print()
+
+    def add_event(self, event: Event) -> None:
+        """Print an event inline with label and color using Rich Text (ASCII-safe)."""
+        color = self._get_color(event)
+        label = self._get_label(event)
+        details = event.details or event.type.value
+        text = Text()
+        text.append("  ", style="")
+        text.append(f"[{label}]", style=f"bold {color}")
+        text.append(f" {details}", style=color)
+        self._console.print(text)
+
+    def end_turn(self, success: bool = True) -> None:
+        """Print elapsed time at end of turn."""
+        if self._turn_start:
+            elapsed = time.time() - self._turn_start
+            label = "[OK]" if success else "[FAIL]"
+            color = "green" if success else "red"
+            text = Text()
+            text.append(f"  ", style="")
+            text.append(label, style=f"bold {color}")
+            text.append(f" Done in {elapsed:.1f}s", style=color)
+            self._console.print(text)
+            self._turn_start = None
+
+    def show_help(self) -> None:
+        """Display available slash commands."""
+        self._console.print()
+        help_panel = Panel(
+            "[bold cyan]/model[/]     Switch AI model\n"
+            "[bold cyan]/quit[/]      Exit chat session\n"
+            "[bold cyan]/help[/]      Show this help\n"
+            "[bold cyan]/clear[/]     Clear the screen\n"
+            "[bold cyan]/sessions[/]  List saved sessions\n"
+            "[bold cyan]/plan[/]      Toggle plan-only mode\n",
+            border_style="cyan",
+            padding=(1, 2),
+            title="[bold]Commands[/]",
+        )
+        self._console.print(help_panel)
+        self._console.print()
+
+    def show_model_switched(self, new_model: str) -> None:
+        """Show model switch confirmation."""
+        self._current_model = new_model
+        text = Text()
+        text.append("  [MODEL] ", style="bold cyan")
+        text.append(f"Switched to: {new_model}", style="dim")
+        self._console.print(text)
+
+    def set_model(self, model_name: str) -> None:
+        """Update the current model name."""
+        self._current_model = model_name
+
+    def _get_label(self, event: Event) -> str:
+        """Return a short ASCII-safe label for the event type/status."""
+        if event.status == "done":
+            if event.type == EventType.COMPLETED:
+                return "OK"
+            elif event.type == EventType.FAILED:
+                return "FAIL"
+            return "DONE"
+        elif event.status == "failed":
+            return "ERR"
+        elif event.status in ("in_progress", "started"):
+            return "..."
+        return event.type.value[:4].upper()
+
+    def _get_color(self, event: Event) -> str:
+        if event.status == "done":
+            return "green"
+        elif event.status == "failed":
+            return "red"
+        elif event.status in ("in_progress", "started"):
+            return "yellow"
+        return "white"
+
+
+class ChatSession:
+    """Interactive chat session with multi-turn conversation."""
+
+    def __init__(
+        self,
+        console: Console | None = None,
+        settings: Settings | None = None,
+        approval_gate: "ApprovalGate | None" = None,
+        use_real: bool = False,
+    ):
+        self._console = console or Console()
+        self._settings = settings or Settings()
+        self._approval_gate = approval_gate
+        self._session_id: str = ""
+        self._history: list[tuple[str, bool]] = []  # (task, success)
+        self._running = False
+        self._plan_only = False
+        self._use_real = use_real
+
+    @property
+    def session_id(self) -> str:
+        return self._session_id
+
+    async def start(self) -> None:
+        """Start the interactive chat loop."""
+        from pgimcode.session import SessionStore
+
+        store = SessionStore()
+        session = store.create(task="Chat session", mode="build")
+        self._session_id = session.id
+
+        renderer = ChatRenderer(
+            console=self._console,
+            session_id=self._session_id,
+            settings=self._settings,
+        )
+
+        renderer.show_welcome()
+
+        bus = EventBus()
+
+        def _on_event(event: Event) -> None:
+            renderer.add_event(event)
+
+        bus.subscribe(_on_event)
+
+        self._running = True
+
+        while self._running:
+            try:
+                line = self._console.input("  [bold bright_white]>[/] ").strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+
+            if not line:
+                continue
+
+            # Handle slash commands
+            if line.startswith("/"):
+                await self._handle_slash_command(line.lower(), renderer, store, bus)
+                continue
+
+            # Process the task
+            renderer.start_turn(line)
+
+            try:
+                success = await self._process_task(line, bus, renderer)
+                self._history.append((line, success))
+            except Exception as e:
+                self._console.print(f"  [FAIL] [red]Error: {e}[/red]")
+
+            renderer.end_turn(success)
+
+        # Clean exit
+        self._console.print()
+        self._console.print("[dim]Goodbye![/]")
+
+    async def _handle_slash_command(
+        self,
+        line: str,
+        renderer: ChatRenderer,
+        store,
+        bus: EventBus,
+    ) -> None:
+        """Handle /model, /quit, /help, /clear, /sessions, /plan commands."""
+        cmd = line.strip().lower()
+
+        if cmd == "/quit" or cmd == "/q":
+            self._running = False
+
+        elif cmd == "/help" or cmd == "/h":
+            renderer.show_help()
+
+        elif cmd == "/clear":
+            self._console.clear()
+
+        elif cmd == "/model":
+            from pgimcode.input_handler import ModelSelector
+            new_model_id = ModelSelector.render_selection(
+                self._console, self._settings.model_name
+            )
+            if new_model_id and new_model_id != self._settings.model_name:
+                ModelSelector.apply_model_selection(self._settings, new_model_id)
+                renderer.show_model_switched(new_model_id)
+                await bus.publish(Event(
+                    session_id=self._session_id,
+                    type=EventType.MODEL_SWITCHED,
+                    step=0,
+                    status="done",
+                    details=f"Switched to: {new_model_id}",
+                ))
+
+        elif cmd == "/sessions":
+            from rich.table import Table
+            table = Table(title="Sessions")
+            table.add_column("ID", style="cyan")
+            table.add_column("Task", style="white")
+            table.add_column("Status", style="green")
+            table.add_column("Created", style="dim")
+            for s in store.list_sessions():
+                created = s.created_at.strftime("%Y-%m-%d %H:%M")
+                table.add_row(s.id, s.task, s.status, created)
+            self._console.print(table)
+
+        elif cmd == "/plan":
+            self._plan_only = not self._plan_only
+            state = "[green]ON[/]" if self._plan_only else "[dim]OFF[/]"
+            self._console.print(f"  [PLAN] Plan-only mode: {state}")
+
+        else:
+            self._console.print(f"  [dim]Unknown command: {line}. Type /help for commands.[/]")
+
+    def _is_coding_task(self, task: str) -> bool:
+        """Check if the task looks like a coding request."""
+        coding_keywords = [
+            "add", "fix", "create", "implement", "change", "update",
+            "remove", "delete", "refactor", "rewrite", "build", "write",
+            "modify", "optimize", "debug", "patch", "edit", "rename",
+            "extract", "move", "convert", "migrate", "upgrade", "setup",
+            "configure", "install", "deploy", "test",
+        ]
+        task_lower = task.lower()
+        return any(kw in task_lower for kw in coding_keywords)
+
+    async def _respond_conversational(self, task: str, bus: EventBus) -> bool:
+        """Handle non-coding chat messages with a mock response."""
+        from pgimcode.session import _new_ulid
+        import asyncio
+
+        task_lower = task.lower()
+
+        if any(g in task_lower for g in ("hi", "hello", "hey", "yo")):
+            msg = f"Hello! I'm pgimcode, your AI coding assistant. Try asking me to add a feature, fix a bug, or refactor code. Type /help for commands."
+        elif "what can you do" in task_lower or "help" in task_lower:
+            msg = "I can scan your repo, read files, edit code, run tests, and verify changes. Try: 'add error handling to auth.py' or 'fix the login bug'."
+        elif any(q in task_lower for q in ("who are you", "what are you")):
+            msg = f"I'm pgimcode v{self._settings.version}, a terminal AI coding agent. I use LLMs to help you code. Currently running in mock/demo mode."
+        elif "model" in task_lower:
+            msg = f"Current model: {self._settings.model_name}. Use /model to switch."
+        else:
+            msg = f"I'm in mock mode — I don't have a real LLM connected yet. Try a coding task like 'add a caching layer' or 'fix the login bug' to see the demo pipeline. Use /model to switch models."
+
+        await bus.publish(Event(
+            id=_new_ulid(),
+            session_id=self._session_id,
+            type=EventType.SESSION_STARTED,
+            step=1,
+            status="in_progress",
+            details=msg,
+        ))
+        await asyncio.sleep(0.3)
+        await bus.publish(Event(
+            id=_new_ulid(),
+            session_id=self._session_id,
+            type=EventType.COMPLETED,
+            step=2,
+            status="done",
+            details=msg,
+        ))
+        return True
+
+    async def _process_task(
+        self,
+        task: str,
+        bus: EventBus,
+        renderer: ChatRenderer,
+    ) -> bool:
+        """Run the task through the agent and stream events."""
+        from pgimcode.session import _new_ulid
+        from pgimcode.context import ContextManager
+
+        # Determine if we should use the real LLM agent
+        can_use_real = self._use_real or (
+            bool(self._settings.deepseek_api_key and not self._settings.deepseek_api_key.endswith("-here"))
+            or bool(self._settings.openai_api_key and not self._settings.openai_api_key.endswith("-here"))
+        )
+
+        if can_use_real:
+            from pgimcode.agent import RealAgent
+            from pgimcode.context import ContextManager
+
+            context_manager = ContextManager(session_id=self._session_id)
+            context_manager.pin(f"Task: {task}", "goal", 0)
+
+            agent = RealAgent(
+                bus=bus,
+                session_id=self._session_id,
+                task=task,
+                mode="build",
+                settings=self._settings,
+            )
+            try:
+                await agent.run()
+                return True
+            except Exception as e:
+                await bus.publish(Event(
+                    id=_new_ulid(),
+                    session_id=self._session_id,
+                    type=EventType.FAILED,
+                    step=0,
+                    status="done",
+                    details=f"Task failed: {e}",
+                ))
+                return False
+
+        # Fallback to MockAgent
+        from pgimcode.mock_agent import MockAgent
+
+        if not self._is_coding_task(task):
+            return await self._respond_conversational(task, bus)
+
+        context_manager = ContextManager(session_id=self._session_id)
+        context_manager.pin(f"Task: {task}", "goal", 0)
+
+        agent = MockAgent(
+            bus=bus,
+            session_id=self._session_id,
+            task=task,
+            approval_gate=self._approval_gate,
+            context_manager=context_manager,
+            settings=self._settings,
+        )
+
+        try:
+            await agent.run(delay=self._settings.mock_delay_seconds)
+            return True
+        except Exception:
+            await bus.publish(Event(
+                id=_new_ulid(),
+                session_id=self._session_id,
+                type=EventType.FAILED,
+                step=0,
+                status="done",
+                details="Task failed",
+            ))
+            return False

@@ -8,58 +8,42 @@ from pgimcode.graph.nodes import (
     intake_node,
     discovery_node,
     planning_node,
-    next_node,
-    inspect_node,
-    edit_node,
-    execute_node,
-    verify_node,
-    compact_node,
-    approval_node,
+    decision_node,
+    execute_tool_node,
     finish_node,
+    next_node,
 )
 
 
 def build_graph(max_turns: int = 50) -> StateGraph:
-    """Build and compile the agent StateGraph."""
+    """Build and compile the agent StateGraph with LLM-powered decision + tool execution."""
     builder = StateGraph(AgentState)
 
-    # Add all nodes
     builder.add_node("intake", intake_node)
     builder.add_node("discovery", discovery_node)
     builder.add_node("planning", planning_node)
-    builder.add_node("decision", lambda s: {"current_node": "decision"})
-    builder.add_node("inspect", inspect_node)
-    builder.add_node("edit", edit_node)
-    builder.add_node("execute", execute_node)
-    builder.add_node("verify", verify_node)
-    builder.add_node("compact", compact_node)
-    builder.add_node("approval", approval_node)
+    builder.add_node("decision", decision_node)
+    builder.add_node("tool_exec", execute_tool_node)
     builder.add_node("finish", finish_node)
 
-    # Linear edges: START → intake → discovery → planning → decision
+    # Linear: START → intake → discovery → planning → decision
     builder.add_edge(START, "intake")
     builder.add_edge("intake", "discovery")
     builder.add_edge("discovery", "planning")
     builder.add_edge("planning", "decision")
 
-    # Conditional edges from decision based on router output
+    # Decision: either call a tool or finish
     builder.add_conditional_edges(
         "decision",
         next_node,
         {
-            "inspect": "inspect",
-            "edit": "edit",
-            "execute": "execute",
-            "verify": "verify",
-            "compact": "compact",
-            "approval": "approval",
+            "tool_exec": "tool_exec",
             "finish": "finish",
         },
     )
 
-    # Action nodes loop back to decision
-    for node in ["inspect", "edit", "execute", "verify", "compact", "approval"]:
-        builder.add_edge(node, "decision")
+    # Tool execution loops back to decision
+    builder.add_edge("tool_exec", "decision")
 
     # Finish ends the graph
     builder.add_edge("finish", END)

@@ -1,67 +1,137 @@
-"""LangGraph node implementations for the pgimcode agent."""
+"""LangGraph node implementations — real LLM-powered agent."""
 
 from __future__ import annotations
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
+
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 
 from pgimcode.graph.state import AgentState
+from pgimcode.graph.tools import TOOL_DEFINITIONS, call_tool
 from pgimcode.discovery.repo_scanner import RepoScanner
 from pgimcode.discovery.repo_map import build_repo_map
 from pgimcode.discovery.language_detector import annotate_languages
 from pgimcode.tools.ranker import rank_files_by_relevance
 from pgimcode.planner import TaskPlanner
 from pgimcode.events import EventType
+from pgimcode.config import Settings
 
 
 def _to_dict(state) -> dict:
-    """Convert AgentState Pydantic model or dict to a plain dict."""
     if hasattr(state, "model_dump"):
         return state.model_dump()
     return dict(state)
 
 
-def _make_event(event_type: EventType, step: int, details: str = "", data: dict | None = None) -> dict:
-    return {
-        "session_id": "",
-        "type": event_type.value,
-        "step": step,
-        "status": "in_progress",
-        "details": details,
-        "data": data or {},
-    }
+def _get_settings(state) -> Settings:
+    s = _to_dict(state)
+    raw = s.get("settings_dict", {})
+    if isinstance(raw, Settings):
+        return raw
+    if isinstance(raw, dict):
+        return Settings(**raw)
+    return Settings()
 
+
+def _build_llm(state) -> ChatOpenAI:
+    settings = _get_settings(state)
+    provider = settings.resolve_provider()
+
+    if provider == "deepseek":
+        model = settings.model_name if settings.model_name.startswith("deepseek") else "deepseek-chat"
+        api_key = settings.deepseek_api_key
+        base_url = settings.api_base_url or "https://api.deepseek.com/v1"
+    else:
+        model = settings.model_name if settings.model_name.startswith("gpt") or settings.model_name.startswith("o") else "gpt-4o"
+        api_key = settings.openai_api_key
+        base_url = settings.api_base_url or None
+
+    temperature = settings.llm_temperature
+
+    kwargs = dict(model=model, temperature=temperature)
+    if api_key:
+        kwargs["api_key"] = api_key
+    if base_url:
+        kwargs["base_url"] = base_url
+
+    return ChatOpenAI(**kwargs)
+
+
+def _build_system_prompt(state: dict) -> str:
+    task = state.get("task", "")
+    mode = state.get("mode", "build")
+    repo_map = state.get("repo_map", {})
+    plan = state.get("plan", {})
+
+    languages = repo_map.get("languages", {})
+    lang_str = ", ".join(f"{k} ({v} files)" for k, v in languages.items()) if languages else "unknown"
+    frameworks = repo_map.get("frameworks", [])
+    fw_str = ", ".join(frameworks) if frameworks else "none detected"
+    total_files = repo_map.get("total_files", 0)
+    plan_steps = ""
+    if plan:
+        steps = plan.get("steps", [])
+        plan_steps = "\n".join(f"  {i+1}. {s.get('description', '')}" for i, s in enumerate(steps[:10]))
+
+    return f"""You are pgimcode, a terminal AI coding assistant. You help users with software engineering tasks by reading, editing, and creating code files in their workspace.
+
+## Current Task
+{task}
+
+## Agent Mode
+{mode}
+
+## Repository Context
+- Languages: {lang_str}
+- Frameworks: {fw_str}
+- Total files: {total_files}
+
+## Plan
+{plan_steps if plan_steps else 'No plan generated yet.'}
+
+## Instructions
+1. Use the available tools to understand the codebase and complete the task.
+2. Read files before editing them to understand their structure.
+3. Make focused, minimal changes. Don't rewrite entire files unnecessarily.
+4. Create new files with write_file, new directories with create_directory.
+5. Search for symbols and patterns before making changes.
+6. After completing the task, verify your changes make sense.
+7. When done, respond with a brief summary of what you did — do NOT call a tool.
+8. If you need to think before acting, use search_text to explore the codebase.
+
+Work step by step. Start by reading relevant files to understand the current state of the code, then plan and execute changes."""
+
+
+# ─────────────────────────────────────────────────────────────
+# Setup nodes (unchanged from original)
+# ─────────────────────────────────────────────────────────────
 
 def intake_node(state) -> dict:
-    """Normalize task, initialize session."""
     s = _to_dict(state)
     current = s.get("turn", 0)
     task = s.get("task", "")
     if task:
         task = task.strip()
-    events = list(s.get("events", []))
-    events.append(_make_event(EventType.SESSION_STARTED, current + 1, f"Task: {task[:80] if task else ''}"))
+    messages = list(s.get("messages", []))
+    settings = s.get("settings_dict", {})
     return {
         "task": task,
         "turn": current + 1,
         "current_node": "discovery",
-        "events": events,
+        "messages": messages,
+        "settings_dict": settings,
     }
 
 
 def discovery_node(state) -> dict:
-    """Scan repo, annotate languages, build repo map."""
     s = _to_dict(state)
     current = s.get("turn", 0)
-    events = list(s.get("events", []))
-    events.append(_make_event(EventType.REPO_SCANNING, current + 1, "Scanning repository"))
-    events.append(_make_event(EventType.FILE_READING, current + 1, "Reading file metadata"))
-
     root = Path(".")
     scanner = RepoScanner(root=root)
     scanned = scanner.scan()
     scanned = annotate_languages(scanned)
     repo_map = build_repo_map(scanner)
-
     repo_map_dict = {
         "root": str(repo_map.root),
         "languages": repo_map.languages,
@@ -75,32 +145,23 @@ def discovery_node(state) -> dict:
         "total_size": repo_map.total_size,
         "top_dirs": repo_map.top_dirs,
     }
-
     return {
         "turn": current + 1,
         "current_node": "planning",
         "repo_map": repo_map_dict,
-        "events": events,
     }
 
 
 def planning_node(state) -> dict:
-    """Rank files and generate a plan."""
     s = _to_dict(state)
     current = s.get("turn", 0)
     task = s.get("task", "")
     repo_map_dict = s.get("repo_map")
-    events = list(s.get("events", []))
-    events.append(_make_event(EventType.PLANNING_STARTED, current + 1, "Planning started"))
-    events.append(_make_event(EventType.PLAN_GENERATED, current + 1, "Plan generated"))
-
     root = Path(".")
     scanner = RepoScanner(root=root)
     files = scanner.scan()
     files = annotate_languages(files)
-
     ranked = rank_files_by_relevance(task, files, root, max_results=20)
-
     from pgimcode.discovery.repo_map import RepoMap
     if repo_map_dict:
         repo_map_for_planner = RepoMap(
@@ -118,10 +179,8 @@ def planning_node(state) -> dict:
         )
     else:
         repo_map_for_planner = build_repo_map(scanner)
-
     planner = TaskPlanner(repo_map=repo_map_for_planner, ranked_files=ranked)
     plan = planner.plan(task)
-
     plan_dict = {
         "task": plan.task,
         "interpretation": plan.interpretation,
@@ -130,152 +189,190 @@ def planning_node(state) -> dict:
         "acceptance_criteria": plan.acceptance_criteria,
         "assumptions": plan.assumptions,
         "steps": [
-            {
-                "description": step.description,
-                "status": step.status,
-                "tool": step.tool,
-                "target": step.target,
-                "reasoning": step.reasoning,
-            }
+            {"description": step.description, "status": step.status,
+             "tool": step.tool, "target": step.target, "reasoning": step.reasoning}
             for step in plan.steps
         ],
         "files_to_inspect": plan.files_to_inspect,
         "next_action": plan.next_action,
         "confidence": plan.confidence,
     }
-
     return {
         "turn": current + 1,
         "current_node": "decision",
         "plan": plan_dict,
-        "events": events,
     }
 
 
-# Routing function passed to add_conditional_edges.
-# In mock mode, cycles: inspect → edit → execute → verify → finish.
-def next_node(state) -> Literal["inspect", "edit", "execute", "verify", "compact", "approval", "finish"]:
-    """Routing function: return the name of the next node to execute."""
+# ─────────────────────────────────────────────────────────────
+# LLM-powered nodes
+# ─────────────────────────────────────────────────────────────
+
+def decision_node(state) -> dict:
+    """Call the LLM with tools. Return next_node: tool_exec or finish."""
     s = _to_dict(state)
-    turn = s.get("turn", 0)
+    current = s.get("turn", 0)
     max_turns = s.get("max_turns", 50)
-    next_node_val = s.get("next_node", "")
+    messages = list(s.get("messages", []))
 
-    if turn >= max_turns:
-        return "finish"
+    if current >= max_turns:
+        return {"next_node": "finish", "turn": current + 1}
 
-    if next_node_val == "inspect":
-        return "inspect"
-    if next_node_val == "edit":
-        return "edit"
-    if next_node_val == "execute":
-        return "execute"
-    if next_node_val == "verify":
-        return "verify"
-    if next_node_val == "compact":
-        return "compact"
-    if next_node_val == "approval":
-        return "approval"
-    if next_node_val == "finish":
-        return "finish"
+    system_prompt = _build_system_prompt(s)
 
-    # Default: start cycling at inspect
-    if not next_node_val and turn < max_turns:
-        return "inspect"
+    # Build message list: system + existing messages
+    llm_messages = []
+    has_system = any(
+        isinstance(m, dict) and m.get("role") == "system"
+        for m in messages
+    )
+    if not has_system:
+        llm_messages.append(SystemMessage(content=system_prompt))
 
-    return "finish"
+    for m in messages:
+        if isinstance(m, dict):
+            role = m.get("role", "")
+            content = m.get("content", "")
+            name = m.get("name", "")
+            tool_call_id = m.get("tool_call_id", "")
+            if role in ("user", "human"):
+                llm_messages.append(HumanMessage(content=content))
+            elif role in ("assistant", "ai"):
+                msg = AIMessage(content=content)
+                if m.get("tool_calls"):
+                    from langchain_core.messages import ToolCall
+                    msg.tool_calls = [
+                        ToolCall(name=tc["name"], args=tc.get("args", {}), id=tc.get("id", ""))
+                        for tc in m["tool_calls"]
+                    ]
+                llm_messages.append(msg)
+            elif role == "tool":
+                llm_messages.append(ToolMessage(content=content, tool_call_id=tool_call_id, name=name))
+        elif hasattr(m, "content"):
+            llm_messages.append(m)
 
+    try:
+        llm = _build_llm(state)
+        llm_with_tools = llm.bind_tools(TOOL_DEFINITIONS)
+        response = llm_with_tools.invoke(llm_messages)
+    except Exception as exc:
+        error_msg = f"LLM call failed: {exc}"
+        return {
+            "turn": current + 1,
+            "next_node": "finish",
+            "status": "failed",
+            "last_tool_result": {"success": False, "result": error_msg},
+            "messages": messages,
+        }
 
-# Stub action nodes — each sets last_tool_result, advances turn, sets next_node
-
-def inspect_node(state) -> dict:
-    """Inspect files based on plan."""
-    s = _to_dict(state)
-    current = s.get("turn", 0)
-    return {
-        "turn": current + 1,
-        "last_tool_result": {"mock": True, "node": "inspect"},
-        "next_node": "edit",
-        "current_node": "decision",
+    # Record the AI response in messages
+    ai_msg = {
+        "role": "assistant",
+        "content": response.content or "",
     }
+    if hasattr(response, "tool_calls") and response.tool_calls:
+        ai_msg["tool_calls"] = [
+            {"name": tc["name"], "args": tc.get("args", {}), "id": tc.get("id", "")}
+            for tc in response.tool_calls
+        ]
 
+    token_usage = s.get("token_usage", 0)
+    if hasattr(response, "response_metadata"):
+        usage = response.response_metadata.get("token_usage", {})
+        token_usage += usage.get("total_tokens", 0)
 
-def edit_node(state) -> dict:
-    """Apply edits."""
-    s = _to_dict(state)
-    current = s.get("turn", 0)
-    changed = list(s.get("changed_files", []))
-    changed.append(f"mock_edit_{current}")
+    messages.append(ai_msg)
+
+    if hasattr(response, "tool_calls") and response.tool_calls:
+        # Store all tool calls for batch execution
+        all_calls = [
+            {"name": tc["name"], "args": tc.get("args", {}), "id": tc.get("id", "")}
+            for tc in response.tool_calls
+        ]
+        return {
+            "turn": current + 1,
+            "next_node": "tool_exec",
+            "pending_action": all_calls,
+            "messages": messages,
+            "token_usage": token_usage,
+        }
+
     return {
         "turn": current + 1,
-        "last_tool_result": {"mock": True, "node": "edit"},
-        "changed_files": changed,
-        "next_node": "execute",
-        "current_node": "decision",
-    }
-
-
-def execute_node(state) -> dict:
-    """Execute commands or tests."""
-    s = _to_dict(state)
-    current = s.get("turn", 0)
-    return {
-        "turn": current + 1,
-        "last_tool_result": {"mock": True, "node": "execute"},
-        "next_node": "verify",
-        "current_node": "decision",
-    }
-
-
-def verify_node(state) -> dict:
-    """Verify changes."""
-    s = _to_dict(state)
-    current = s.get("turn", 0)
-    return {
-        "turn": current + 1,
-        "last_tool_result": {"mock": True, "node": "verify"},
         "next_node": "finish",
-        "current_node": "decision",
+        "messages": messages,
+        "token_usage": token_usage,
+        "status": "completed",
     }
 
 
-def compact_node(state) -> dict:
-    """Compact context if needed (every 5 turns)."""
+def execute_tool_node(state) -> dict:
+    """Execute all pending tool calls and store results."""
     s = _to_dict(state)
     current = s.get("turn", 0)
-    active_events = list(s.get("active_events", []))
-    events = s.get("events", [])
+    pending = s.get("pending_action", [])
+    messages = list(s.get("messages", []))
+    changed_files = list(s.get("changed_files", []))
 
-    if current % 5 == 0 and events:
-        recent = events[-5:]
-        active_events = recent
+    # Normalize: could be single dict or list of dicts
+    if isinstance(pending, dict) and pending:
+        tool_calls = [pending]
+    elif isinstance(pending, list):
+        tool_calls = pending
+    else:
+        tool_calls = []
+
+    results = []
+    for tc in tool_calls:
+        tool_name = tc.get("name", "")
+        tool_args = tc.get("args", {})
+        tool_id = tc.get("id", "")
+
+        result = call_tool(tool_name, tool_args)
+
+        if result.get("success"):
+            result_content = str(result.get("result", "Done"))
+        else:
+            result_content = f"Error: {result.get('result', 'Unknown error')}"
+
+        messages.append({
+            "role": "tool",
+            "content": result_content,
+            "tool_call_id": tool_id,
+            "name": tool_name,
+        })
+        results.append({"name": tool_name, "success": result.get("success", False), "message": result_content})
+
+        if tool_name in ("write_file", "edit_replace_block", "edit_patch"):
+            path = tool_args.get("path", "")
+            if path and path not in changed_files:
+                changed_files.append(path)
 
     return {
         "turn": current + 1,
-        "active_events": active_events,
-        "current_node": "decision",
-        "next_node": "inspect",
-    }
-
-
-def approval_node(state) -> dict:
-    """Check if approval is required."""
-    s = _to_dict(state)
-    current = s.get("turn", 0)
-    changed_files = s.get("changed_files", [])
-    approval_required = len(changed_files) > 0
-    return {
-        "turn": current + 1,
-        "approval_required": approval_required,
-        "approval_reason": "Edit requires approval" if approval_required else "",
-        "current_node": "decision",
-        "next_node": "inspect",
+        "next_node": "decision",
+        "last_tool_result": {"success": all(r["success"] for r in results), "result": results},
+        "messages": messages,
+        "changed_files": changed_files,
+        "pending_action": [],
     }
 
 
 def finish_node(state) -> dict:
-    """Finalize session."""
+    s = _to_dict(state)
     return {
-        "status": "completed",
+        "status": s.get("status", "completed"),
         "current_node": "finish",
     }
+
+
+# ─────────────────────────────────────────────────────────────
+# Router for conditional edges
+# ─────────────────────────────────────────────────────────────
+
+def next_node(state) -> Literal["tool_exec", "finish"]:
+    s = _to_dict(state)
+    nxt = s.get("next_node", "")
+    if nxt == "tool_exec":
+        return "tool_exec"
+    return "finish"

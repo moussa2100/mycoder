@@ -30,6 +30,7 @@ class EventType(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CONTEXT_COMPACTED = "context_compacted"
+    MODEL_SWITCHED = "model_switched"
 
 
 class Event(BaseModel):

@@ -58,9 +58,9 @@ class ApprovalGate:
         self,
         config: ApprovalConfig,
         session_id: str,
-        bus: EventBus,
+        bus: EventBus | None = None,
         console: Console | None = None,
-    ):
+    ): 
         self.config = config
         self.session_id = session_id
         self.bus = bus
@@ -78,14 +78,18 @@ class ApprovalGate:
             return False
         return True
 
+    async def _publish(self, event: Event) -> None:
+        """Publish an event if bus is available."""
+        if self.bus is not None:
+            await self.bus.publish(event)
+
     async def check(self, event_type: EventType, details: str) -> bool:
         if not self._needs_approval(event_type):
             return True
 
         level = ACTION_PERMISSIONS.get(event_type, PermissionLevel.CAUTION)
 
-        # Emit blocked event
-        await self.bus.publish(Event(
+        await self._publish(Event(
             session_id=self.session_id,
             type=EventType.BLOCKED_FOR_APPROVAL,
             status="blocked",
@@ -107,14 +111,14 @@ class ApprovalGate:
         ))
 
         if approved:
-            await self.bus.publish(Event(
+            await self._publish(Event(
                 session_id=self.session_id,
                 type=EventType.BLOCKED_FOR_APPROVAL,
                 status="approved",
                 details=f"Approved: {event_type.value}",
             ))
         else:
-            await self.bus.publish(Event(
+            await self._publish(Event(
                 session_id=self.session_id,
                 type=EventType.BLOCKED_FOR_APPROVAL,
                 status="denied",

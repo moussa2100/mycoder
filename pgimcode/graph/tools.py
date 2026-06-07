@@ -26,7 +26,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "str", "description": "Path to the file to read."},
+                    "path": {"type": "string", "description": "Path to the file to read."},
                 },
                 "required": ["path"],
             },
@@ -40,9 +40,9 @@ TOOL_DEFINITIONS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "str", "description": "Path to the file to read."},
-                    "start_line": {"type": "int", "description": "First line number (1-indexed, inclusive)."},
-                    "end_line": {"type": "int", "description": "Last line number (1-indexed, inclusive)."},
+                    "path": {"type": "string", "description": "Path to the file to read."},
+                    "start_line": {"type": "integer", "description": "First line number (1-indexed, inclusive)."},
+                    "end_line": {"type": "integer", "description": "Last line number (1-indexed, inclusive)."},
                 },
                 "required": ["path", "start_line", "end_line"],
             },
@@ -56,8 +56,8 @@ TOOL_DEFINITIONS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "query": {"type": "str", "description": "Regex or literal string to search for."},
-                    "glob": {"type": "str", "description": "Optional glob pattern to limit search to matching files."},
+                    "query": {"type": "string", "description": "Regex or literal string to search for."},
+                    "glob": {"type": "string", "description": "Optional glob pattern to limit search to matching files."},
                 },
                 "required": ["query"],
             },
@@ -71,8 +71,8 @@ TOOL_DEFINITIONS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "symbol_name": {"type": "str", "description": "Name of the symbol to search for."},
-                    "language": {"type": "str", "description": "Programming language ('python', 'typescript', 'rust', 'go', 'java'). Default: 'python'."},
+                    "symbol_name": {"type": "string", "description": "Name of the symbol to search for."},
+                    "language": {"type": "string", "description": "Programming language ('python', 'typescript', 'rust', 'go', 'java'). Default: 'python'."},
                 },
                 "required": ["symbol_name"],
             },
@@ -86,9 +86,9 @@ TOOL_DEFINITIONS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "str", "description": "Path to the file to edit."},
-                    "old_text": {"type": "str", "description": "Exact text block to replace (must be unique in the file)."},
-                    "new_text": {"type": "str", "description": "Replacement text."},
+                    "path": {"type": "string", "description": "Path to the file to edit."},
+                    "old_text": {"type": "string", "description": "Exact text block to replace (must be unique in the file)."},
+                    "new_text": {"type": "string", "description": "Replacement text."},
                 },
                 "required": ["path", "old_text", "new_text"],
             },
@@ -102,8 +102,8 @@ TOOL_DEFINITIONS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "str", "description": "Path to the file to patch."},
-                    "patch_text": {"type": "str", "description": "Unified diff string to apply."},
+                    "path": {"type": "string", "description": "Path to the file to patch."},
+                    "patch_text": {"type": "string", "description": "Unified diff string to apply."},
                 },
                 "required": ["path", "patch_text"],
             },
@@ -117,7 +117,7 @@ TOOL_DEFINITIONS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "array", "items": {"type": "str"}, "description": "Command as a list of arguments, e.g. ['pytest', '-v']."},
+                    "command": {"type": "array", "items": {"type": "string"}, "description": "Command as a list of arguments, e.g. ['pytest', '-v']."},
                 },
                 "required": ["command"],
             },
@@ -143,7 +143,36 @@ TOOL_DEFINITIONS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "str", "description": "Path to the file to verify."},
+                    "path": {"type": "string", "description": "Path to the file to verify."},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Create a new file or overwrite an existing file with the given content. Creates parent directories if needed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the file to write."},
+                    "content": {"type": "string", "description": "Full text content to write to the file."},
+                },
+                "required": ["path", "content"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_directory",
+            "description": "Create a new directory (and any necessary parent directories).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Path to the directory to create."},
                 },
                 "required": ["path"],
             },
@@ -268,6 +297,29 @@ def _wrap_verify_file(path: str) -> dict:
     }
 
 
+def _wrap_write_file(path: str, content: str) -> dict:
+    filepath = Path(path)
+    filepath.parent.mkdir(parents=True, exist_ok=True)
+    filepath.write_text(content, encoding="utf-8")
+    return {
+        "success": True,
+        "path": str(filepath),
+        "size": len(content),
+        "lines": content.count("\n") + 1,
+        "message": f"Created file: {path} ({len(content)} bytes, {content.count(chr(10)) + 1} lines)",
+    }
+
+
+def _wrap_create_directory(path: str) -> dict:
+    dirpath = Path(path)
+    dirpath.mkdir(parents=True, exist_ok=True)
+    return {
+        "success": True,
+        "path": str(dirpath),
+        "message": f"Created directory: {path}",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Name → wrapper map
 # ---------------------------------------------------------------------------
@@ -282,6 +334,8 @@ TOOL_MAP: dict[str, Callable[..., dict]] = {
     "run_command": _wrap_run_command,
     "run_tests": _wrap_run_tests,
     "verify_file": _wrap_verify_file,
+    "write_file": _wrap_write_file,
+    "create_directory": _wrap_create_directory,
 }
 
 

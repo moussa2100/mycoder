@@ -10,7 +10,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """pgimcode settings, sourced from env + config file."""
 
-    # Config source: env vars (PGIMCODE_XXX) or optional .env
     model_config = SettingsConfigDict(
         env_prefix="PGIMCODE_",
         env_file=".env",
@@ -36,3 +35,34 @@ class Settings(BaseSettings):
     model_name: str = "gpt-4o"
     llm_max_turns: int = 50
     llm_temperature: float = 0.2
+    api_provider: str = "openai"
+    api_base_url: str | None = None
+    deepseek_api_key: str | None = None
+
+    def get_active_api_key(self) -> str | None:
+        """Return any available API key, preferring the active provider."""
+        if self.api_provider == "deepseek" and self.deepseek_api_key:
+            return self.deepseek_api_key
+        if self.api_provider == "openai" and self.openai_api_key:
+            return self.openai_api_key
+        return self.deepseek_api_key or self.openai_api_key
+
+    def resolve_provider(self) -> str:
+        """Auto-detect the best provider based on available (non-placeholder) keys."""
+        def _is_real(key: str | None) -> bool:
+            if not key:
+                return False
+            return not key.endswith("-here") and len(key) > 20
+
+        has_openai = _is_real(self.openai_api_key)
+        has_deepseek = _is_real(self.deepseek_api_key)
+
+        if self.api_provider == "deepseek" and has_deepseek:
+            return "deepseek"
+        if self.api_provider == "openai" and has_openai:
+            return "openai"
+        if has_deepseek:
+            return "deepseek"
+        if has_openai:
+            return "openai"
+        return self.api_provider

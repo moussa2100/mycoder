@@ -26,8 +26,58 @@ from pgimcode.terminal import RichTerminalRenderer
 from pgimcode.tools.snapshot import SnapshotManager
 from pgimcode.tools.diff import DiffResult
 from pgimcode.tools.test_runner import run_tests
+from pgimcode.models import AVAILABLE_MODELS, ModelProvider, get_models_by_provider, resolve_model_info
+from pgimcode.chat import ChatSession
+from pgimcode.input_handler import SlashCommandListener, ModelSelector
 
-app = typer.Typer(no_args_is_help=False, add_completion=False)
+app = typer.Typer(no_args_is_help=False, add_completion=False, invoke_without_command=True)
+
+
+@app.callback(invoke_without_command=True)
+def default_callback(
+    ctx: typer.Context,
+    model: str | None = typer.Option(None, "--model", "-M", help="Select AI model"),
+    auto_approve: bool = typer.Option(False, "--auto-approve", help="Auto-approve caution-level actions"),
+    real: bool = typer.Option(False, "--real", help="Use real LLM agent (requires API key)"),
+) -> None:
+    """pgimcode — Terminal AI Coding Assistant. Default: interactive chat."""
+    if ctx.invoked_subcommand is not None:
+        return
+
+    import asyncio
+
+    settings = Settings()
+
+    if model:
+        info = resolve_model_info(model)
+        settings.model_name = model
+        settings.api_provider = info.provider.value
+        settings.api_base_url = info.api_base_url
+
+    console = Console()
+
+    approval_config = ApprovalConfig(auto_approve_caution=auto_approve)
+    gate = ApprovalGate(config=approval_config, session_id="", bus=None, console=console)
+
+    if not auto_approve:
+        def prompt_user(action: str, details: str) -> bool:
+            console.print(f"\n[yellow]🛑 Approval required:[/] {action}")
+            console.print(f"[dim]{details}[/dim]")
+            answer = console.input("Approve? [y/N]: ").strip().lower()
+            return answer in ("y", "yes")
+        gate.prompt_fn = prompt_user
+
+    chat = ChatSession(
+        console=console,
+        settings=settings,
+        approval_gate=gate,
+        use_real=real,
+    )
+
+    try:
+        asyncio.run(chat.start())
+    except KeyboardInterrupt:
+        console.print("\n[dim]Goodbye![/]")
 
 
 @app.command()
@@ -76,6 +126,7 @@ def run(
     trace_export: str | None = typer.Option(None, "--trace-export", help="Export trace to JSONL file path"),
     failure_snapshot: bool = typer.Option(False, "--failure-snapshot", help="Write failure snapshot on FAILED events"),
     real: bool = typer.Option(False, "--real", help="Use real LLM agent instead of mock"),
+    model: str | None = typer.Option(None, "--model", "-M", help="Select AI model (e.g. gpt-4o, deepseek-chat). Use 'models' subcommand to list all."),
 ) -> None:
     """Run a coding task with the agent."""
     # Handle dry-run mode early
@@ -84,6 +135,12 @@ def run(
         return
 
     settings = Settings()
+
+    if model:
+        info = resolve_model_info(model)
+        settings.model_name = model
+        settings.api_provider = info.provider.value
+        settings.api_base_url = info.api_base_url
 
     # Disable color if requested
     if no_color:
@@ -203,16 +260,34 @@ def run(
             context_manager = ContextManager(session_id=session_id)
             context_manager.pin(f"Task: {task}", "goal", 0)
 
+            slash_listener: SlashCommandListener | None = None
+            if real:
+                slash_listener = SlashCommandListener(
+                    settings=settings,
+                    bus=bus,
+                    console=console,
+                    session_id=session_id,
+                )
+                slash_listener.start()
+
             if real:
                 from pgimcode.agent import RealAgent
                 agent = RealAgent(
                     bus, session_id, task,
-                    approval_gate=gate, context_manager=context_manager, mode=mode
+                    approval_gate=gate,
+                    context_manager=context_manager,
+                    mode=mode,
+                    settings=settings,
+                    slash_listener=slash_listener,
+                    renderer=renderer,
                 )
             else:
                 agent = MockAgent(
                     bus, session_id, task,
-                    approval_gate=gate, context_manager=context_manager
+                    approval_gate=gate,
+                    context_manager=context_manager,
+                    slash_listener=slash_listener,
+                    renderer=renderer,
                 )
 
             # Create retry policy (for future integration)
@@ -224,6 +299,9 @@ def run(
 
             try:
                 asyncio.run(agent.run())
+
+                if slash_listener:
+                    slash_listener.stop()
 
                 # Handle --execute-tests: run actual tests instead of mock
                 if execute_tests and renderer._events:
@@ -668,6 +746,114 @@ def plan(
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted.[/]")
         raise typer.Exit(1)
+
+
+@app.command(name="models")
+def list_models(
+    provider: str = typer.Option("all", "--provider", "-p", help="Filter by provider: openai, deepseek, or all"),
+) -> None:
+    """List all available AI models."""
+    from rich.console import Console
+    from rich.table import Table
+
+    console = Console()
+    settings = Settings()
+    current_model = settings.model_name
+
+    table = Table(
+        title="[bold cyan]Available Models[/]",
+        border_style="cyan",
+        show_lines=False,
+    )
+    table.add_column("#", style="dim", justify="right", width=3)
+    table.add_column("Provider", style="bold")
+    table.add_column("Model ID", style="cyan")
+    table.add_column("Name")
+    table.add_column("Context", justify="right")
+    table.add_column("Pricing", style="dim")
+    table.add_column("Description")
+
+    models = list(AVAILABLE_MODELS.values())
+
+    if provider != "all":
+        try:
+            prov = ModelProvider(provider)
+            models = get_models_by_provider(prov)
+        except ValueError:
+            console.print(f"[red]Unknown provider: {provider}[/]")
+            console.print(f"[dim]Available: openai, deepseek, all[/]")
+            raise typer.Exit(code=1)
+
+    current_prov = None
+    for i, model in enumerate(models, 1):
+        prov_label = ""
+        if model.provider != current_prov:
+            prov_label = model.provider.value.upper()
+            current_prov = model.provider
+
+        ctx = f"{model.context_window // 1000}K"
+        cursor = "→" if model.id == current_model else " "
+        table.add_row(
+            f"{cursor}{i}",
+            prov_label,
+            model.id,
+            model.name,
+            ctx,
+            model.pricing_note,
+            model.description,
+        )
+
+    console.print(table)
+    console.print()
+    console.print(f"[dim]Current model:[/] [bold cyan]{current_model}[/]")
+    console.print("[dim]Set via --model flag, /model during session, or PGIMCODE_MODEL_NAME env var[/]")
+
+
+@app.command(name="chat")
+def chat_command(
+    model: str | None = typer.Option(None, "--model", "-M", help="Select AI model"),
+    no_color: bool = typer.Option(False, "--no-color", help="Disable color output"),
+    auto_approve: bool = typer.Option(False, "--auto-approve", help="Auto-approve caution-level actions"),
+    real: bool = typer.Option(False, "--real", help="Use real LLM agent (requires API key)"),
+) -> None:
+    """Start an interactive chat session (Claude Code-style UI)."""
+    import asyncio
+
+    settings = Settings()
+
+    if model:
+        info = resolve_model_info(model)
+        settings.model_name = model
+        settings.api_provider = info.provider.value
+        settings.api_base_url = info.api_base_url
+
+    if no_color:
+        settings.color_enabled = False
+
+    console = Console()
+
+    approval_config = ApprovalConfig(auto_approve_caution=auto_approve)
+    gate = ApprovalGate(config=approval_config, session_id="", bus=None, console=console)
+
+    if not auto_approve:
+        def prompt_user(action: str, details: str) -> bool:
+            console.print(f"\n[yellow]🛑 Approval required:[/] {action}")
+            console.print(f"[dim]{details}[/dim]")
+            answer = console.input("Approve? [y/N]: ").strip().lower()
+            return answer in ("y", "yes")
+        gate.prompt_fn = prompt_user
+
+    chat = ChatSession(
+        console=console,
+        settings=settings,
+        approval_gate=gate,
+        use_real=real,
+    )
+
+    try:
+        asyncio.run(chat.start())
+    except KeyboardInterrupt:
+        console.print("\n[dim]Goodbye![/]")
 
 
 # Entry point for CLI (used by poetry scripts)

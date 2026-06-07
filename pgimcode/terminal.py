@@ -27,6 +27,7 @@ _EVENT_ICONS: dict[EventType, str] = {
     EventType.BLOCKED_FOR_APPROVAL: "🛑",
     EventType.COMPLETED: "✅",
     EventType.FAILED: "❌",
+    EventType.MODEL_SWITCHED: "🔄",
 }
 
 # Status to icon mapping
@@ -56,10 +57,25 @@ class RichTerminalRenderer:
         self._start_time = time.time()
         self._live: Live | None = None
         self._settings = Settings()
+        self._current_model = self._settings.model_name
 
     def add_event(self, event: Event) -> None:
         """Append an event to the internal list."""
         self._events.append(event)
+
+    def set_model(self, model_name: str) -> None:
+        """Update the current model name shown in the header."""
+        self._current_model = model_name
+
+    def pause_live(self) -> None:
+        """Pause the Live display for interactive prompts."""
+        if self._live and self._live.is_started:
+            self._live.stop()
+
+    def resume_live(self) -> None:
+        """Resume the Live display after interactive prompts."""
+        if self._live:
+            self._live.start()
 
     def _get_icon(self, event: Event) -> str:
         """Get the icon for an event based on type and status."""
@@ -112,6 +128,7 @@ class RichTerminalRenderer:
         header_text.append(f"| ", style="dim")
         header_text.append(f"{self._task} ", style="bold")
         header_text.append(f"| {self._mode}", style="dim")
+        header_text.append(f" | model: {self._current_model}", style="dim cyan")
 
         header_panel = Panel(header_text, border_style="cyan", padding=(0, 1))
         layout.split_column(

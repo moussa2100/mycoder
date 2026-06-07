@@ -18,12 +18,7 @@ def _node_to_event_type(node_name: str) -> EventType:
         "discovery": EventType.REPO_SCANNING,
         "planning": EventType.PLAN_GENERATED,
         "decision": EventType.PLANNING_STARTED,
-        "inspect": EventType.FILE_READING,
-        "edit": EventType.PATCH_APPLYING,
-        "execute": EventType.TESTS_RUNNING,
-        "verify": EventType.VERIFICATION_STARTED,
-        "compact": EventType.CONTEXT_COMPACTED,
-        "approval": EventType.BLOCKED_FOR_APPROVAL,
+        "tool_exec": EventType.PATCH_APPLYING,
         "finish": EventType.COMPLETED,
     }
     return mapping.get(node_name, EventType.SESSION_STARTED)
@@ -40,6 +35,9 @@ class RealAgent:
         approval_gate: ApprovalGate | None = None,
         context_manager=None,
         mode: str = "build",
+        settings=None,
+        slash_listener=None,
+        renderer=None,
     ):
         self._bus = bus
         self._session_id = session_id
@@ -48,7 +46,9 @@ class RealAgent:
         self.cancelled = False
         self.approval_gate = approval_gate
         self.context_manager = context_manager
-        self._settings = Settings()
+        self._settings = settings if settings is not None else Settings()
+        self.slash_listener = slash_listener
+        self.renderer = renderer
 
     async def run(self) -> None:
         """Run the agent graph end-to-end, publishing events as nodes execute."""
@@ -65,6 +65,7 @@ class RealAgent:
             "active_events": [],
             "summaries": [],
             "pinned": [],
+            "messages": [],
             "repo_map": None,
             "plan": None,
             "current_node": "start",
@@ -73,11 +74,12 @@ class RealAgent:
             "status": "running",
             "approval_required": False,
             "approval_reason": "",
-            "pending_action": {},
+            "pending_action": [],
             "token_usage": 0,
             "cost_usd": 0.0,
             "changed_files": [],
             "next_node": "",
+            "settings_dict": self._settings.model_dump(),
         }
 
         async for chunk in graph.astream(initial_state, config):
@@ -92,6 +94,11 @@ class RealAgent:
                 ))
                 break
 
+            if self.slash_listener and self.slash_listener.has_command():
+                cmd = self.slash_listener.pending_command()
+                if cmd == "model_switch":
+                    await self._handle_model_switch()
+
             for node_name, state_update in chunk.items():
                 if "__end__" in node_name:
                     continue
@@ -99,13 +106,64 @@ class RealAgent:
                 step = state_update.get("turn", 0)
                 event_type = _node_to_event_type(node_name)
 
+                # Build a descriptive detail string
+                detail = f"Node: {node_name}"
+                if node_name == "tool_exec":
+                    pending = state_update.get("pending_action", [])
+                    if isinstance(pending, dict) and pending:
+                        calls = [pending]
+                    elif isinstance(pending, list):
+                        calls = pending
+                    else:
+                        calls = []
+                    if calls:
+                        names = [c.get("name", "?") for c in calls]
+                        detail = f"Running: {', '.join(names)}"
+                    last = state_update.get("last_tool_result", {})
+                    if isinstance(last, dict) and last.get("result"):
+                        results = last["result"]
+                        if isinstance(results, list):
+                            for r in results:
+                                if isinstance(r, dict):
+                                    detail = r.get("message", detail)
+                elif node_name == "decision":
+                    msgs = state_update.get("messages", [])
+                    if msgs:
+                        last = msgs[-1]
+                        if isinstance(last, dict) and last.get("content"):
+                            detail = last["content"][:200]
+                    nxt = state_update.get("next_node", "")
+                    if nxt == "tool_exec":
+                        pending = state_update.get("pending_action", [])
+                        if isinstance(pending, dict) and pending:
+                            calls = [pending]
+                        elif isinstance(pending, list):
+                            calls = pending
+                        else:
+                            calls = []
+                        if calls:
+                            names = [c.get("name", "?") for c in calls]
+                            detail = f"Calling: {', '.join(names)}"
+                    elif nxt == "finish":
+                        status = state_update.get("status", "")
+                        if status == "failed":
+                            ltr = state_update.get("last_tool_result", {})
+                            if isinstance(ltr, dict):
+                                detail = f"Error: {ltr.get('result', 'Unknown')}"
+                            else:
+                                detail = "LLM call failed"
+                        else:
+                            detail = msgs[-1].get("content", "Done")[:200] if msgs and isinstance(msgs[-1], dict) else "Done"
+                elif node_name == "finish":
+                    detail = "Task completed"
+
                 await self._bus.publish(Event(
                     id=_new_ulid(),
                     session_id=self._session_id,
                     type=event_type,
                     step=step,
                     status="in_progress",
-                    details=f"Node: {node_name}",
+                    details=detail,
                 ))
 
                 # Also add to context manager if set
@@ -119,6 +177,37 @@ class RealAgent:
                         details=f"Node: {node_name}",
                     )
                     self.context_manager.add(event)
+
+    async def _handle_model_switch(self) -> None:
+        """Pause agent, show model selector, apply selection, resume."""
+        from pgimcode.input_handler import ModelSelector
+
+        console = None
+        if self.renderer and hasattr(self.renderer, '_console'):
+            console = self.renderer._console
+
+        if self.renderer:
+            self.renderer.pause_live()
+
+        if console:
+            new_model_id = ModelSelector.render_selection(
+                console, self._settings.model_name
+            )
+            if new_model_id and new_model_id != self._settings.model_name:
+                ModelSelector.apply_model_selection(self._settings, new_model_id)
+                if self.renderer:
+                    self.renderer.set_model(new_model_id)
+                await self._bus.publish(Event(
+                    id=_new_ulid(),
+                    session_id=self._session_id,
+                    type=EventType.MODEL_SWITCHED,
+                    step=0,
+                    status="done",
+                    details=f"Switched to: {new_model_id}",
+                ))
+
+        if self.renderer:
+            self.renderer.resume_live()
 
     def cancel(self) -> None:
         """Set cancelled flag so the run loop exits early."""
