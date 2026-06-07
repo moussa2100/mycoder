@@ -16,6 +16,7 @@ python-ulid = { extras = ["pydantic"], version = "^2.0" }
 platformdirs = "^4.0"
 tree-sitter = ">=0.25"
 tree-sitter-language-pack = ">=1.8"
+deepagents = ">=0.6.8"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0"

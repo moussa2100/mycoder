@@ -207,13 +207,24 @@ for parent in [_workspace_root] + list(_workspace_root.parents):
         break
 
 
+def _workspace_path(path: str) -> Path:
+    """Resolve a path relative to the workspace root. Strips leading / and \\."""
+    p = Path(path)
+    stripped = str(p).lstrip("/").lstrip("\\")
+    # If absolute (has drive letter), return as-is
+    if Path(stripped).drive:
+        return Path(stripped)
+    return _workspace_root / stripped
+
+
 def _make_result(success: bool, result: Any) -> dict:
     return {"success": success, "result": result}
 
 
 def _wrap_read_file(path: str) -> dict:
+    """Read the full contents of a text file, truncating very large files."""
     from pgimcode.tools.read import ReadResult
-    r = _read_file(Path(path))
+    r = _read_file(_workspace_path(path))
     msg = f"Read {path} ({r.total_lines} lines)"
     if r.truncated:
         msg += " [truncated]"
@@ -221,12 +232,14 @@ def _wrap_read_file(path: str) -> dict:
 
 
 def _wrap_read_chunk(path: str, start_line: int, end_line: int) -> dict:
-    r = _read_file_chunk(Path(path), start_line, end_line)
+    """Read a specific line range from a file (1-indexed lines, inclusive)."""
+    r = _read_file_chunk(_workspace_path(path), start_line, end_line)
     msg = f"Read {path} lines {start_line}-{end_line} ({r.total_lines} total)"
     return {"content": r.content, "total_lines": r.total_lines, "truncated": r.truncated, "message": msg}
 
 
 def _wrap_search_text(query: str, glob: str | None = None) -> dict:
+    """Search file contents using ripgrep. Returns matching lines with context."""
     results = _rg_search(query, root=_workspace_root, glob=glob, max_results=50, context_lines=2)
     msg = f"Found {len(results)} match(es) for '{query}'"
     return {
@@ -246,6 +259,7 @@ def _wrap_search_text(query: str, glob: str | None = None) -> dict:
 
 
 def _wrap_search_symbol(symbol_name: str, language: str = "python") -> dict:
+    """Search for a symbol definition (function, class, etc.) in a language-aware way."""
     results = _rg_search_symbol(symbol_name, root=_workspace_root, language=language)
     msg = f"Found {len(results)} symbol(s) for '{symbol_name}'"
     return {
@@ -265,7 +279,8 @@ def _wrap_search_symbol(symbol_name: str, language: str = "python") -> dict:
 
 
 def _wrap_edit_replace_block(path: str, old_text: str, new_text: str) -> dict:
-    result = _replace_block(Path(path), old_text, new_text)
+    """Replace the first exact occurrence of old_text with new_text in a file."""
+    result = _replace_block(_workspace_path(path), old_text, new_text)
     return {
         "success": result.success,
         "operation": result.operation,
@@ -276,7 +291,8 @@ def _wrap_edit_replace_block(path: str, old_text: str, new_text: str) -> dict:
 
 
 def _wrap_edit_patch(path: str, patch_text: str) -> dict:
-    result = _edit_patch_file(Path(path), patch_text)
+    """Apply a unified diff patch to a file."""
+    result = _edit_patch_file(_workspace_path(path), patch_text)
     return {
         "success": result.success,
         "operation": result.operation,
@@ -287,6 +303,7 @@ def _wrap_edit_patch(path: str, patch_text: str) -> dict:
 
 
 def _wrap_run_command(command: list[str]) -> dict:
+    """Run a shell command in the workspace root (allowlist-restricted)."""
     runner = ShellRunner(workspace_root=_workspace_root)
     result = runner.run(command)
     return {
@@ -300,6 +317,7 @@ def _wrap_run_command(command: list[str]) -> dict:
 
 
 def _wrap_run_tests() -> dict:
+    """Run the project's test suite (auto-detects framework)."""
     result = _run_tests(_workspace_root, timeout=60)
     return {
         "success": result.success,
@@ -317,8 +335,9 @@ def _wrap_run_tests() -> dict:
 
 
 def _wrap_verify_file(path: str) -> dict:
+    """Run syntax check on one or more files."""
     verifier = Verifier(workspace_root=_workspace_root)
-    check = verifier.check_syntax([Path(path)])
+    check = verifier.check_syntax([_workspace_path(path)])
     return {
         "status": check.status,
         "message": f"Syntax check {check.status}: {check.message}",
@@ -327,7 +346,8 @@ def _wrap_verify_file(path: str) -> dict:
 
 
 def _wrap_write_file(path: str, content: str) -> dict:
-    filepath = Path(path)
+    """Create a new file or overwrite an existing file with the given content. Creates parent directories if needed."""
+    filepath = _workspace_path(path)
     filepath.parent.mkdir(parents=True, exist_ok=True)
     filepath.write_text(content, encoding="utf-8")
     return {
@@ -340,7 +360,8 @@ def _wrap_write_file(path: str, content: str) -> dict:
 
 
 def _wrap_create_directory(path: str) -> dict:
-    dirpath = Path(path)
+    """Create a new directory (and any necessary parent directories)."""
+    dirpath = _workspace_path(path)
     dirpath.mkdir(parents=True, exist_ok=True)
     return {
         "success": True,
@@ -350,7 +371,8 @@ def _wrap_create_directory(path: str) -> dict:
 
 
 def _wrap_list_files(path: str = ".") -> dict:
-    dirpath = Path(path)
+    """List files and directories in a given path."""
+    dirpath = _workspace_path(path)
     if not dirpath.exists():
         return {"success": False, "message": f"Path not found: {path}", "entries": []}
     if not dirpath.is_dir():
@@ -410,3 +432,57 @@ def call_tool(name: str, arguments: dict) -> dict:
         return _make_result(True, result)
     except Exception as exc:  # noqa: BLE001
         return _make_result(False, str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Public tool aliases (proper names for deepagents / langchain tool calling)
+# These have clean names matching the OpenAI function definitions.
+# ---------------------------------------------------------------------------
+
+def read_file(path: str) -> dict:
+    """Read the full contents of a text file, truncating very large files."""
+    return _wrap_read_file(path)
+
+def read_chunk(path: str, start_line: int, end_line: int) -> dict:
+    """Read a specific line range from a file (1-indexed lines, inclusive)."""
+    return _wrap_read_chunk(path, start_line, end_line)
+
+def search_text(query: str, glob: str | None = None) -> dict:
+    """Search file contents using ripgrep. Returns matching lines with context."""
+    return _wrap_search_text(query, glob)
+
+def search_symbol(symbol_name: str, language: str = "python") -> dict:
+    """Search for a symbol definition (function, class, etc.) in a language-aware way."""
+    return _wrap_search_symbol(symbol_name, language)
+
+def edit_replace_block(path: str, old_text: str, new_text: str) -> dict:
+    """Replace the first exact occurrence of old_text with new_text in a file."""
+    return _wrap_edit_replace_block(path, old_text, new_text)
+
+def edit_patch(path: str, patch_text: str) -> dict:
+    """Apply a unified diff patch to a file."""
+    return _wrap_edit_patch(path, patch_text)
+
+def run_command(command: list[str]) -> dict:
+    """Run a shell command in the workspace root (allowlist-restricted)."""
+    return _wrap_run_command(command)
+
+def run_tests() -> dict:
+    """Run the project's test suite (auto-detects framework)."""
+    return _wrap_run_tests()
+
+def verify_file(path: str) -> dict:
+    """Run syntax check on one or more files."""
+    return _wrap_verify_file(path)
+
+def write_file(path: str, content: str) -> dict:
+    """Create a new file or overwrite an existing file with the given content. Creates parent directories if needed."""
+    return _wrap_write_file(path, content)
+
+def create_directory(path: str) -> dict:
+    """Create a new directory (and any necessary parent directories)."""
+    return _wrap_create_directory(path)
+
+def list_files(path: str = ".") -> dict:
+    """List files and directories in a given path."""
+    return _wrap_list_files(path)
