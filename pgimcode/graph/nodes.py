@@ -18,6 +18,15 @@ from pgimcode.events import EventType
 from pgimcode.config import Settings
 
 
+def _get_workspace_root() -> Path:
+    """Find the project root, walking up from CWD."""
+    cwd = Path.cwd().resolve()
+    for parent in [cwd] + list(cwd.parents):
+        if (parent / "pyproject.toml").exists() or (parent / ".env").exists():
+            return parent
+    return cwd
+
+
 def _to_dict(state) -> dict:
     if hasattr(state, "model_dump"):
         return state.model_dump()
@@ -90,17 +99,17 @@ def _build_system_prompt(state: dict) -> str:
 ## Plan
 {plan_steps if plan_steps else 'No plan generated yet.'}
 
-## Instructions
-1. Use the available tools to understand the codebase and complete the task.
-2. Read files before editing them to understand their structure.
-3. Make focused, minimal changes. Don't rewrite entire files unnecessarily.
-4. Create new files with write_file, new directories with create_directory.
-5. Search for symbols and patterns before making changes.
-6. After completing the task, verify your changes make sense.
-7. When done, respond with a brief summary of what you did — do NOT call a tool.
-8. If you need to think before acting, use search_text to explore the codebase.
+## Critical Instructions
+1. **ALWAYS read a file before editing it.** Use read_file to understand the current contents.
+2. **If a search returns no results, try reading the target file directly** or try a different search query. Don't give up after one empty search.
+3. **Use write_file to create new files, read_file to read existing files, edit_replace_block to modify.**
+4. **Make focused, minimal changes.** Don't rewrite entire files if a small edit will do.
+5. **When asked to style/modify HTML:** read the file first, then apply changes using edit_replace_block.
+6. **After completing the task, verify with a brief summary.**
+7. **Work step by step.** Read first, then plan, then execute.
+8. **Never say 'Done' without actually making the requested changes.** If you need more information, use tools to find it.
 
-Work step by step. Start by reading relevant files to understand the current state of the code, then plan and execute changes."""
+Be persistent. Complete the full task — don't stop halfway."""
 
 
 # ─────────────────────────────────────────────────────────────
@@ -127,7 +136,7 @@ def intake_node(state) -> dict:
 def discovery_node(state) -> dict:
     s = _to_dict(state)
     current = s.get("turn", 0)
-    root = Path(".")
+    root = _get_workspace_root()
     scanner = RepoScanner(root=root)
     scanned = scanner.scan()
     scanned = annotate_languages(scanned)
@@ -157,7 +166,7 @@ def planning_node(state) -> dict:
     current = s.get("turn", 0)
     task = s.get("task", "")
     repo_map_dict = s.get("repo_map")
-    root = Path(".")
+    root = _get_workspace_root()
     scanner = RepoScanner(root=root)
     files = scanner.scan()
     files = annotate_languages(files)
@@ -330,10 +339,14 @@ def execute_tool_node(state) -> dict:
 
         result = call_tool(tool_name, tool_args)
 
-        if result.get("success"):
-            result_content = str(result.get("result", "Done"))
+        inner = result.get("result", "Done")
+        if isinstance(inner, dict):
+            result_content = inner.get("message", str(inner))
         else:
-            result_content = f"Error: {result.get('result', 'Unknown error')}"
+            result_content = str(inner)
+
+        if not result.get("success"):
+            result_content = f"Error: {result_content}"
 
         messages.append({
             "role": "tool",

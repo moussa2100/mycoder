@@ -29,6 +29,9 @@ DEFAULT_ALLOWLIST: set[str] = {
     "ruff", "mypy", "black", "isort", "flake8",
     "git", "echo", "cat", "ls", "pwd", "wc",
     "mkdir", "cp", "mv", "rm", "touch",
+    # Windows
+    "cmd", "dir", "findstr", "where", "tree",
+    "powershell", "pwsh",
 }
 
 

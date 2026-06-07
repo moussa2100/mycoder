@@ -41,8 +41,22 @@ def rg_search(
 
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-    except Exception:
-        return []
+    except FileNotFoundError:
+        return [GrepResult(
+            path=root,
+            line_number=0,
+            text=f"[Error: ripgrep (rg) not found. Install it from https://github.com/BurntSushi/ripgrep]",
+            context_before=[],
+            context_after=[],
+        )]
+    except Exception as e:
+        return [GrepResult(
+            path=root,
+            line_number=0,
+            text=f"[Error: {e}]",
+            context_before=[],
+            context_after=[],
+        )]
 
     results = []
     current_match = None

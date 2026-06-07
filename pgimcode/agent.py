@@ -106,56 +106,72 @@ class RealAgent:
                 step = state_update.get("turn", 0)
                 event_type = _node_to_event_type(node_name)
 
-                # Build a descriptive detail string
-                detail = f"Node: {node_name}"
+                # Build a descriptive detail string — natural language, not node names
+                detail = ""
                 if node_name == "tool_exec":
-                    pending = state_update.get("pending_action", [])
-                    if isinstance(pending, dict) and pending:
-                        calls = [pending]
-                    elif isinstance(pending, list):
-                        calls = pending
-                    else:
-                        calls = []
-                    if calls:
-                        names = [c.get("name", "?") for c in calls]
-                        detail = f"Running: {', '.join(names)}"
                     last = state_update.get("last_tool_result", {})
                     if isinstance(last, dict) and last.get("result"):
                         results = last["result"]
                         if isinstance(results, list):
-                            for r in results:
-                                if isinstance(r, dict):
-                                    detail = r.get("message", detail)
+                            for r in reversed(results):
+                                if isinstance(r, dict) and r.get("message"):
+                                    detail = r["message"]
+                                    break
+                        elif isinstance(results, dict):
+                            detail = results.get("message", "")
+                    if not detail:
+                        detail = "Tool executed"
+
                 elif node_name == "decision":
                     msgs = state_update.get("messages", [])
-                    if msgs:
-                        last = msgs[-1]
-                        if isinstance(last, dict) and last.get("content"):
-                            detail = last["content"][:200]
+                    content = ""
+                    if msgs and isinstance(msgs[-1], dict):
+                        content = msgs[-1].get("content", "")
                     nxt = state_update.get("next_node", "")
-                    if nxt == "tool_exec":
-                        pending = state_update.get("pending_action", [])
-                        if isinstance(pending, dict) and pending:
-                            calls = [pending]
-                        elif isinstance(pending, list):
-                            calls = pending
+                    status = state_update.get("status", "")
+
+                    if status == "failed":
+                        ltr = state_update.get("last_tool_result", {})
+                        if isinstance(ltr, dict):
+                            detail = f"Error: {ltr.get('result', 'Unknown')}"
                         else:
-                            calls = []
-                        if calls:
-                            names = [c.get("name", "?") for c in calls]
-                            detail = f"Calling: {', '.join(names)}"
-                    elif nxt == "finish":
-                        status = state_update.get("status", "")
-                        if status == "failed":
-                            ltr = state_update.get("last_tool_result", {})
-                            if isinstance(ltr, dict):
-                                detail = f"Error: {ltr.get('result', 'Unknown')}"
+                            detail = "LLM call failed"
+                    elif nxt == "tool_exec":
+                        if content:
+                            detail = content[:300]
+                        else:
+                            pending = state_update.get("pending_action", [])
+                            if isinstance(pending, list) and pending:
+                                names = [c.get("name", "?") for c in pending]
+                                paths = []
+                                for c in pending:
+                                    args = c.get("args", {})
+                                    p = args.get("path", "")
+                                    if p:
+                                        paths.append(p)
+                                if paths and len(paths) == 1:
+                                    detail = f"{names[0]}: {paths[0]}"
+                                elif paths:
+                                    detail = f"{', '.join(names)}: {', '.join(paths)}"
+                                else:
+                                    detail = f"{', '.join(names)}"
                             else:
-                                detail = "LLM call failed"
-                        else:
-                            detail = msgs[-1].get("content", "Done")[:200] if msgs and isinstance(msgs[-1], dict) else "Done"
+                                detail = "Thinking..."
+                    elif nxt == "finish":
+                        detail = content[:300] if content else "Done"
+                    else:
+                        detail = "Thinking..."
+
+                elif node_name == "intake":
+                    detail = "Initializing..."
+                elif node_name == "discovery":
+                    detail = "Scanning repository"
+                elif node_name == "planning":
+                    detail = "Planning approach"
                 elif node_name == "finish":
                     detail = "Task completed"
+                else:
+                    detail = state_update.get("status", "Processing...")
 
                 await self._bus.publish(Event(
                     id=_new_ulid(),

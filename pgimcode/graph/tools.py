@@ -178,6 +178,20 @@ TOOL_DEFINITIONS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": "List files and directories in a given path. Use this to explore the directory structure and find files when search_text returns no results.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory path to list (default: current workspace root)."},
+                },
+                "required": [],
+            },
+        },
+    },
 ]
 
 
@@ -185,7 +199,12 @@ TOOL_DEFINITIONS: list[dict] = [
 # Wrapper functions
 # ---------------------------------------------------------------------------
 
-_workspace_root = Path(".")
+_workspace_root = Path.cwd().resolve()
+# Walk up to find project root (where pyproject.toml or .env lives)
+for parent in [_workspace_root] + list(_workspace_root.parents):
+    if (parent / "pyproject.toml").exists() or (parent / ".env").exists():
+        _workspace_root = parent
+        break
 
 
 def _make_result(success: bool, result: Any) -> dict:
@@ -195,18 +214,24 @@ def _make_result(success: bool, result: Any) -> dict:
 def _wrap_read_file(path: str) -> dict:
     from pgimcode.tools.read import ReadResult
     r = _read_file(Path(path))
-    return {"content": r.content, "total_lines": r.total_lines, "truncated": r.truncated}
+    msg = f"Read {path} ({r.total_lines} lines)"
+    if r.truncated:
+        msg += " [truncated]"
+    return {"content": r.content, "total_lines": r.total_lines, "truncated": r.truncated, "message": msg}
 
 
 def _wrap_read_chunk(path: str, start_line: int, end_line: int) -> dict:
     r = _read_file_chunk(Path(path), start_line, end_line)
-    return {"content": r.content, "total_lines": r.total_lines, "truncated": r.truncated}
+    msg = f"Read {path} lines {start_line}-{end_line} ({r.total_lines} total)"
+    return {"content": r.content, "total_lines": r.total_lines, "truncated": r.truncated, "message": msg}
 
 
 def _wrap_search_text(query: str, glob: str | None = None) -> dict:
     results = _rg_search(query, root=_workspace_root, glob=glob, max_results=50, context_lines=2)
+    msg = f"Found {len(results)} match(es) for '{query}'"
     return {
         "count": len(results),
+        "message": msg,
         "matches": [
             {
                 "path": str(m.path),
@@ -222,8 +247,10 @@ def _wrap_search_text(query: str, glob: str | None = None) -> dict:
 
 def _wrap_search_symbol(symbol_name: str, language: str = "python") -> dict:
     results = _rg_search_symbol(symbol_name, root=_workspace_root, language=language)
+    msg = f"Found {len(results)} symbol(s) for '{symbol_name}'"
     return {
         "count": len(results),
+        "message": msg,
         "matches": [
             {
                 "path": str(m.path),
@@ -268,6 +295,7 @@ def _wrap_run_command(command: list[str]) -> dict:
         "stderr": result.stderr,
         "duration_ms": result.duration_ms,
         "timed_out": result.timed_out,
+        "message": f"Command exited with code {result.exit_code}" if result.exit_code == 0 else f"Command failed (exit {result.exit_code}): {result.stderr[:200]}",
     }
 
 
@@ -284,6 +312,7 @@ def _wrap_run_tests() -> dict:
         "stderr": result.stderr,
         "duration_ms": result.duration_ms,
         "timed_out": result.timed_out,
+        "message": f"Tests: {result.pass_count} passed, {result.fail_count} failed, {result.skip_count} skipped",
     }
 
 
@@ -292,7 +321,7 @@ def _wrap_verify_file(path: str) -> dict:
     check = verifier.check_syntax([Path(path)])
     return {
         "status": check.status,
-        "message": check.message,
+        "message": f"Syntax check {check.status}: {check.message}",
         "details": check.details,
     }
 
@@ -320,6 +349,28 @@ def _wrap_create_directory(path: str) -> dict:
     }
 
 
+def _wrap_list_files(path: str = ".") -> dict:
+    dirpath = Path(path)
+    if not dirpath.exists():
+        return {"success": False, "message": f"Path not found: {path}", "entries": []}
+    if not dirpath.is_dir():
+        return {"success": False, "message": f"Not a directory: {path}", "entries": []}
+    entries = []
+    try:
+        for item in sorted(dirpath.iterdir()):
+            entry_type = "dir" if item.is_dir() else "file"
+            size = item.stat().st_size if item.is_file() else 0
+            entries.append({
+                "name": item.name,
+                "type": entry_type,
+                "size": size,
+            })
+    except PermissionError:
+        return {"success": False, "message": f"Permission denied: {path}", "entries": []}
+    msg = f"Listed {len(entries)} entries in {path}"
+    return {"success": True, "message": msg, "entries": entries}
+
+
 # ---------------------------------------------------------------------------
 # Name → wrapper map
 # ---------------------------------------------------------------------------
@@ -336,6 +387,7 @@ TOOL_MAP: dict[str, Callable[..., dict]] = {
     "verify_file": _wrap_verify_file,
     "write_file": _wrap_write_file,
     "create_directory": _wrap_create_directory,
+    "list_files": _wrap_list_files,
 }
 
 
