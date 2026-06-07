@@ -50,10 +50,7 @@ class SnapshotManager:
             root=str(root) if root else ".",
         )
         meta_path = snap_dir / "snapshot.meta.json"
-        meta_path.write_text(meta.__dict__.__str__())
-        # Actually write as JSON:
-        import json as _json
-        meta_path.write_text(_json.dumps(meta.__dict__, indent=2))
+        meta_path.write_text(json.dumps(meta.__dict__, indent=2))
 
         return snap_id
 

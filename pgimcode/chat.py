@@ -10,6 +10,8 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 from rich.align import Align
+from rich.markdown import Markdown
+from rich.syntax import Syntax
 
 from pgimcode.config import Settings
 from pgimcode.events import Event, EventBus, EventType
@@ -32,6 +34,9 @@ class ChatRenderer:
         self._settings = settings or Settings()
         self._current_model = self._settings.model_name
         self._turn_start: float | None = None
+        self._stream_active = False
+        self._stream_chars = 0
+        self._assistant_buffer = ""
 
     def show_welcome(self) -> None:
         """Display welcome banner at chat start."""
@@ -66,6 +71,12 @@ class ChatRenderer:
 
     def add_event(self, event: Event) -> None:
         """Print an event inline with label and color using Rich Text (ASCII-safe)."""
+        # Don't interrupt a token stream with status lines.
+        if self._stream_active and event.type not in (
+            EventType.COMPLETED, EventType.FAILED
+        ):
+            return
+        self.on_assistant_end()
         color = self._get_color(event)
         label = self._get_label(event)
         details = event.details or event.type.value
@@ -75,8 +86,115 @@ class ChatRenderer:
         text.append(f"  {details}", style=color)
         self._console.print(text)
 
+    # ------------------------------------------------------------------
+    # Streaming-style rendering (Claude-Code-like)
+    # ------------------------------------------------------------------
+    def on_assistant_token(self, token: str) -> None:
+        """Append a token from the LLM's current assistant message, no newline."""
+        if not token:
+            return
+        if not self._stream_active:
+            self._console.print()
+            header = Text()
+            header.append("  ● ", style="bold cyan")
+            header.append("Assistant", style="bold")
+            self._console.print(header)
+            self._console.file.write("  ")
+            self._stream_active = True
+            self._stream_chars = 0
+            self._assistant_buffer = ""
+        # Write raw to underlying file to avoid Rich's per-call newline buffering.
+        self._console.file.write(token)
+        self._console.file.flush()
+        self._stream_chars += len(token)
+        self._assistant_buffer += token
+
+    def on_assistant_end(self, render_panel: bool = False) -> None:
+        """Finalize the in-flight assistant text block."""
+        if self._stream_active:
+            self._console.file.write("\n")
+            self._console.file.flush()
+            self._stream_active = False
+            self._stream_chars = 0
+            content = self._assistant_buffer.strip()
+            if render_panel and content:
+                self._console.print(Panel(
+                    Markdown(content),
+                    title="[bold cyan]Final response[/]",
+                    title_align="left",
+                    border_style="cyan",
+                    padding=(0, 1),
+                ))
+            self._assistant_buffer = ""
+
+    def on_tool_call(self, name: str, args: dict | None = None) -> None:
+        """Render a tool-call panel with name + JSON arguments."""
+        self.on_assistant_end()
+        import json
+        try:
+            args_str = json.dumps(self._compact_tool_args(args or {}), indent=2, ensure_ascii=False)
+        except (TypeError, ValueError):
+            args_str = str(args)
+        body = Syntax(
+            args_str, "json", theme="ansi_dark",
+            line_numbers=False, word_wrap=True, background_color="default",
+        )
+        self._console.print(Panel(
+            body,
+            title=f"[bold yellow]⚙  {name}[/]",
+            title_align="left",
+            border_style="yellow",
+            padding=(0, 1),
+        ))
+
+    def on_tool_result(
+        self, name: str, content: str, success: bool = True, max_chars: int = 600
+    ) -> None:
+        """Render a tool-result panel; truncates long output with a hint."""
+        self.on_assistant_end()
+        text = "" if content is None else str(content)
+        truncated_n = 0
+        if len(text) > max_chars:
+            truncated_n = len(text) - max_chars
+            text = text[:max_chars].rstrip() + f"\n… [{truncated_n} more chars hidden]"
+        color = "green" if success else "red"
+        title = f"[bold {color}]↳ {name}[/]"
+        if truncated_n:
+            title += "  [dim](truncated)[/]"
+        self._console.print(Panel(
+            text or "[dim](empty)[/]",
+            title=title,
+            title_align="left",
+            border_style=color,
+            padding=(0, 1),
+        ))
+
+    def _compact_tool_args(self, value):
+        """Hide large blobs like file contents from tool-call panels."""
+        if isinstance(value, dict):
+            compacted = {}
+            for key, item in value.items():
+                if isinstance(item, str) and key in {"content", "old_text", "new_text", "patch_text"}:
+                    compacted[key] = self._compact_string(item)
+                else:
+                    compacted[key] = self._compact_tool_args(item)
+            return compacted
+        if isinstance(value, list):
+            return [self._compact_tool_args(item) for item in value[:10]]
+        if isinstance(value, str):
+            return self._compact_string(value)
+        return value
+
+    def _compact_string(self, value: str, max_inline: int = 140) -> str:
+        if len(value) <= max_inline and "\n" not in value:
+            return value
+        preview = value[:80].replace("\n", "\\n")
+        suffix = "..." if len(value) > 80 else ""
+        return f"<{len(value)} chars hidden: {preview}{suffix}>"
+
     def end_turn(self, success: bool = True) -> None:
         """Print elapsed time at end of turn."""
+        self.on_assistant_end(render_panel=success)
         if self._turn_start:
             elapsed = time.time() - self._turn_start
             label = "OK" if success else "FAIL"
@@ -351,6 +469,7 @@ class ChatSession:
                 task=task,
                 mode="build",
                 settings=self._settings,
+                renderer=renderer,
             )
             try:
                 await agent.run()

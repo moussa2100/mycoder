@@ -199,22 +199,55 @@ TOOL_DEFINITIONS: list[dict] = [
 # Wrapper functions
 # ---------------------------------------------------------------------------
 
-_workspace_root = Path.cwd().resolve()
-# Walk up to find project root (where pyproject.toml or .env lives)
-for parent in [_workspace_root] + list(_workspace_root.parents):
-    if (parent / "pyproject.toml").exists() or (parent / ".env").exists():
-        _workspace_root = parent
-        break
+
+def _get_workspace_root() -> Path:
+    """Resolve workspace root lazily at call time, walking up from CWD."""
+    cwd = Path.cwd().resolve()
+    for parent in [cwd] + list(cwd.parents):
+        if (parent / "pyproject.toml").exists() or (parent / ".env").exists():
+            return parent
+    return cwd
 
 
 def _workspace_path(path: str) -> Path:
-    """Resolve a path relative to the workspace root. Strips leading / and \\."""
+    """Resolve repo-relative, /workspace, or absolute paths into the local workspace."""
+    raw = str(path or ".").strip()
+    root = _get_workspace_root()
+
+    if raw in {"/workspace", "workspace"}:
+        return root
+    if raw.startswith("/workspace/"):
+        raw = raw[len("/workspace/"):]
+
+    p = Path(raw)
+    if p.drive:
+        try:
+            resolved = p.resolve()
+            try:
+                return root / resolved.relative_to(root)
+            except ValueError:
+                return resolved
+        except OSError:
+            return p
+
+    stripped = raw.lstrip("/").lstrip("\\")
+    return root / stripped
+
+
+def _display_path(path: Path | str) -> str:
+    """Return a workspace-relative display path for tool output."""
+    root = _get_workspace_root().resolve()
     p = Path(path)
-    stripped = str(p).lstrip("/").lstrip("\\")
-    # If absolute (has drive letter), return as-is
-    if Path(stripped).drive:
-        return Path(stripped)
-    return _workspace_root / stripped
+    try:
+        resolved = p.resolve()
+    except OSError:
+        resolved = p
+    try:
+        rel = resolved.relative_to(root)
+        text = rel.as_posix()
+        return text or "."
+    except ValueError:
+        return str(p).replace("\\", "/")
 
 
 def _make_result(success: bool, result: Any) -> dict:
@@ -240,14 +273,14 @@ def _wrap_read_chunk(path: str, start_line: int, end_line: int) -> dict:
 
 def _wrap_search_text(query: str, glob: str | None = None) -> dict:
     """Search file contents using ripgrep. Returns matching lines with context."""
-    results = _rg_search(query, root=_workspace_root, glob=glob, max_results=50, context_lines=2)
+    results = _rg_search(query, root=_get_workspace_root(), glob=glob, max_results=50, context_lines=2)
     msg = f"Found {len(results)} match(es) for '{query}'"
     return {
         "count": len(results),
         "message": msg,
         "matches": [
             {
-                "path": str(m.path),
+                "path": _display_path(m.path),
                 "line_number": m.line_number,
                 "text": m.text,
                 "context_before": m.context_before,
@@ -260,14 +293,14 @@ def _wrap_search_text(query: str, glob: str | None = None) -> dict:
 
 def _wrap_search_symbol(symbol_name: str, language: str = "python") -> dict:
     """Search for a symbol definition (function, class, etc.) in a language-aware way."""
-    results = _rg_search_symbol(symbol_name, root=_workspace_root, language=language)
+    results = _rg_search_symbol(symbol_name, root=_get_workspace_root(), language=language)
     msg = f"Found {len(results)} symbol(s) for '{symbol_name}'"
     return {
         "count": len(results),
         "message": msg,
         "matches": [
             {
-                "path": str(m.path),
+                "path": _display_path(m.path),
                 "line_number": m.line_number,
                 "text": m.text,
                 "context_before": m.context_before,
@@ -304,7 +337,7 @@ def _wrap_edit_patch(path: str, patch_text: str) -> dict:
 
 def _wrap_run_command(command: list[str]) -> dict:
     """Run a shell command in the workspace root (allowlist-restricted)."""
-    runner = ShellRunner(workspace_root=_workspace_root)
+    runner = ShellRunner(workspace_root=_get_workspace_root())
     result = runner.run(command)
     return {
         "exit_code": result.exit_code,
@@ -318,7 +351,7 @@ def _wrap_run_command(command: list[str]) -> dict:
 
 def _wrap_run_tests() -> dict:
     """Run the project's test suite (auto-detects framework)."""
-    result = _run_tests(_workspace_root, timeout=60)
+    result = _run_tests(_get_workspace_root(), timeout=60)
     return {
         "success": result.success,
         "framework": result.framework,
@@ -336,7 +369,7 @@ def _wrap_run_tests() -> dict:
 
 def _wrap_verify_file(path: str) -> dict:
     """Run syntax check on one or more files."""
-    verifier = Verifier(workspace_root=_workspace_root)
+    verifier = Verifier(workspace_root=_get_workspace_root())
     check = verifier.check_syntax([_workspace_path(path)])
     return {
         "status": check.status,
@@ -352,7 +385,7 @@ def _wrap_write_file(path: str, content: str) -> dict:
     filepath.write_text(content, encoding="utf-8")
     return {
         "success": True,
-        "path": str(filepath),
+        "path": _display_path(filepath),
         "size": len(content),
         "lines": content.count("\n") + 1,
         "message": f"Created file: {path} ({len(content)} bytes, {content.count(chr(10)) + 1} lines)",
@@ -365,7 +398,7 @@ def _wrap_create_directory(path: str) -> dict:
     dirpath.mkdir(parents=True, exist_ok=True)
     return {
         "success": True,
-        "path": str(dirpath),
+        "path": _display_path(dirpath),
         "message": f"Created directory: {path}",
     }
 

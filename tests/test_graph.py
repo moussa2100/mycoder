@@ -39,7 +39,7 @@ def test_graph_runs_stub():
         "status": "running",
         "approval_required": False,
         "approval_reason": "",
-        "pending_action": {},
+        "pending_action": [],
         "token_usage": 0,
         "cost_usd": 0.0,
         "changed_files": [],
@@ -73,12 +73,7 @@ def test_graph_nodes_exist():
         "discovery",
         "planning",
         "decision",
-        "inspect",
-        "edit",
-        "execute",
-        "verify",
-        "compact",
-        "approval",
+        "tool_exec",
         "finish",
     }
     for node in expected_nodes:
@@ -92,7 +87,7 @@ def test_graph_conditional_edges():
 
     # Get all edges with decision as source
     decision_targets = {e.target for e in graph_repr.edges if e.source == "decision"}
-    expected_targets = {"inspect", "edit", "execute", "verify", "compact", "approval", "finish"}
+    expected_targets = {"tool_exec", "finish"}
     assert decision_targets == expected_targets, (
         f"Decision node should have edges to {expected_targets}, got {decision_targets}"
     )

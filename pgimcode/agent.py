@@ -57,19 +57,29 @@ class RealAgent:
         ranked = rank_files_by_relevance(self._task, scanned, self._workspace_root, max_results=20)
 
         repo_summary = f"{repo_map.total_files} files, {repo_map.languages}"
-        top_files = "\n".join(f"  {rf.file.path} (score: {rf.score:.1f})" for rf in ranked[:8])
+        top_files = "\n".join(
+            f"  {rf.file.path.as_posix()} (score: {rf.score:.1f})"
+            for rf in ranked[:8]
+        )
 
         context_prompt = f"""## Task
 {self._task}
 
 ## Repository
 {repo_summary}
-Workspace: {self._workspace_root}
+Workspace: .
 
 ## Top Files
 {top_files if top_files else 'No files found'}
 
-Complete the task using the available tools. Be thorough."""
+## Tooling Rules
+- Use only the provided project tools.
+- For repo navigation, prefer `list_files`, `read_file`, `read_chunk`, `search_text`, and `search_symbol`.
+- Always use workspace-relative paths like `.`, `frontend`, or `frontend/index.html`.
+- Never use absolute Windows paths like `C:\\...`.
+- Never use shell-style file browsing commands like `ls` or `cat` when project tools exist.
+
+Complete the task using the available tools. Be thorough, but keep user-facing narration concise."""
 
         # Phase 3: Run orchestrator
         try:
@@ -77,27 +87,14 @@ Complete the task using the available tools. Be thorough."""
             config = {"configurable": {"thread_id": self._session_id}}
             initial = {"messages": [{"role": "user", "content": context_prompt}]}
 
-            step = 0
-            async for chunk in agent.astream(initial, config):
-                if self.cancelled:
-                    break
+            streaming = self.renderer is not None and hasattr(
+                self.renderer, "on_assistant_token"
+            )
 
-                if self.slash_listener and self.slash_listener.has_command():
-                    cmd = self.slash_listener.pending_command()
-                    if cmd == "model_switch":
-                        await self._handle_model_switch()
-
-                for node_name, state_update in chunk.items():
-                    if node_name in ("__end__", "__start__", "start"):
-                        continue
-                    if state_update is None:
-                        continue
-
-                    detail = self._parse_deepagents_event(node_name, state_update)
-                    if detail:
-                        step += 1
-                        event_type = self._event_type_for_node(node_name)
-                        await self._emit_event(event_type, step, detail)
+            if streaming:
+                await self._run_streaming(agent, initial, config)
+            else:
+                await self._run_updates_only(agent, initial, config)
 
             await self._emit("complete", "Task completed")
 
@@ -111,6 +108,140 @@ Complete the task using the available tools. Be thorough."""
                 details=f"Error: {e}",
             ))
             raise
+
+    async def _run_streaming(self, agent, initial, config) -> None:
+        """Stream tokens + tool calls + tool results directly to a streaming renderer."""
+        seen_tool_call_ids: set[str] = set()
+        seen_tool_result_ids: set[str] = set()
+
+        async for mode, data in agent.astream(
+            initial, config, stream_mode=["updates", "messages"]
+        ):
+            if self.cancelled:
+                break
+
+            if self.slash_listener and self.slash_listener.has_command():
+                cmd = self.slash_listener.pending_command()
+                if cmd == "model_switch":
+                    await self._handle_model_switch()
+
+            if mode == "messages":
+                msg_chunk, meta = data
+                content = self._extract_stream_text(msg_chunk, meta)
+                if content:
+                    self.renderer.on_assistant_token(content)
+                continue
+
+            if mode == "updates":
+                for node_name, state_update in (data or {}).items():
+                    if node_name in ("__end__", "__start__", "start"):
+                        continue
+                    if not isinstance(state_update, dict):
+                        continue
+                    for msg in state_update.get("messages", []) or []:
+                        self._render_message(msg, seen_tool_call_ids, seen_tool_result_ids)
+
+    def _render_message(
+        self, msg, seen_tool_call_ids: set[str], seen_tool_result_ids: set[str]
+    ) -> None:
+        """Render a single LangGraph message (assistant tool-calls or tool result)."""
+        tool_calls = getattr(msg, "tool_calls", None)
+        if tool_calls:
+            for tc in (tool_calls if isinstance(tool_calls, list) else [tool_calls]):
+                if isinstance(tc, dict):
+                    tc_id = tc.get("id") or ""
+                    name = tc.get("name", "?")
+                    args = tc.get("args", {}) or {}
+                else:
+                    tc_id = getattr(tc, "id", "") or ""
+                    name = getattr(tc, "name", "?")
+                    args = getattr(tc, "args", {}) or {}
+                if tc_id and tc_id in seen_tool_call_ids:
+                    continue
+                if tc_id:
+                    seen_tool_call_ids.add(tc_id)
+                self.renderer.on_tool_call(name, args)
+            return
+
+        role = getattr(msg, "role", "") or getattr(msg, "type", "")
+        if role == "tool":
+            tc_id = getattr(msg, "tool_call_id", "") or ""
+            if tc_id and tc_id in seen_tool_result_ids:
+                return
+            if tc_id:
+                seen_tool_result_ids.add(tc_id)
+            name = getattr(msg, "name", "") or "tool"
+            content = getattr(msg, "content", "") or ""
+            success = True
+            text = content if isinstance(content, str) else str(content)
+            try:
+                import json as _json
+                parsed = _json.loads(text)
+                if isinstance(parsed, dict):
+                    if parsed.get("success") is False:
+                        success = False
+                    msg_text = parsed.get("message")
+                    if isinstance(msg_text, str) and msg_text:
+                        text = msg_text
+            except (ValueError, TypeError):
+                pass
+            self.renderer.on_tool_result(name, text, success=success)
+
+    def _extract_stream_text(self, msg_chunk, meta: dict | None) -> str | None:
+        """Return only user-meaningful assistant narration, not tool payloads."""
+        node_name = str((meta or {}).get("langgraph_node", ""))
+        chunk_type = msg_chunk.__class__.__name__.lower()
+
+        if "tool" in node_name.lower() or "tool" in chunk_type:
+            return None
+        if getattr(msg_chunk, "tool_call_id", None) or getattr(msg_chunk, "name", None):
+            return None
+
+        content = getattr(msg_chunk, "content", "") or ""
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+            text = "".join(parts)
+        else:
+            return None
+
+        stripped = text.strip()
+        if not stripped:
+            return None
+        if stripped.startswith("{") and '"message"' in stripped:
+            return None
+        if stripped.lower().startswith("<!doctype html") or stripped.lower().startswith("<html"):
+            return None
+        return text
+
+    async def _run_updates_only(self, agent, initial, config) -> None:
+        """Legacy path: emit one event per node update via the bus (no renderer streaming)."""
+        step = 0
+        async for chunk in agent.astream(initial, config):
+            if self.cancelled:
+                break
+
+            if self.slash_listener and self.slash_listener.has_command():
+                cmd = self.slash_listener.pending_command()
+                if cmd == "model_switch":
+                    await self._handle_model_switch()
+
+            for node_name, state_update in chunk.items():
+                if node_name in ("__end__", "__start__", "start"):
+                    continue
+                if state_update is None:
+                    continue
+                detail = self._parse_deepagents_event(node_name, state_update)
+                if detail:
+                    step += 1
+                    event_type = self._event_type_for_node(node_name)
+                    await self._emit_event(event_type, step, detail)
 
     def _parse_deepagents_event(self, node_name: str, update: dict) -> str | None:
         """Parse a deepagents streaming event into a human-readable string."""

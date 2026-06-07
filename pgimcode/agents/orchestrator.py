@@ -50,7 +50,12 @@ Delegate work to sub-agents using the built-in `task` tool:
 5. **Complete the full task** — Don't stop halfway through
 6. **Report clearly** — Summarize what was done when the task is complete
 
-You have direct access to all tools as well. Use them when a quick read or write is faster than delegating to a sub-agent."""
+You have direct access to all tools as well. Use them when a quick read or write is faster than delegating to a sub-agent.
+
+## Path Rules
+- Always use workspace-relative paths like `.`, `frontend`, or `frontend/index.html`
+- Never use absolute Windows paths like `C:\...`
+- Never use shell-style file exploration tools like `ls` or `cat` when `list_files`, `read_file`, `read_chunk`, or `search_text` can do the job"""
 
 
 def create_orchestrator(settings: "Settings", workspace_root=None):

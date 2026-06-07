@@ -20,7 +20,6 @@ from pgimcode.context import ContextManager
 from pgimcode.mock_agent import MockAgent
 from pgimcode.observability import MetricsCollector, TraceRecorder, FailureSnapshot
 from pgimcode.planner import TaskPlanner
-from pgimcode.retry import RetryPolicy
 from pgimcode.session import SessionStore
 from pgimcode.terminal import RichTerminalRenderer
 from pgimcode.tools.snapshot import SnapshotManager
@@ -290,12 +289,12 @@ def run(
                     renderer=renderer,
                 )
 
-            # Create retry policy (for future integration)
-            retry_policy = RetryPolicy(
-                max_retries=2,
-                backoff_factor=0.0,  # no sleep for mock CLI (fast)
-                log_fn=lambda msg: console.print(f"[dim]{msg}[/dim]"),
-            )
+            # Retry policy available for future integration
+            # retry_policy = RetryPolicy(
+            #     max_retries=2,
+            #     backoff_factor=0.0,
+            #     log_fn=lambda msg: console.print(f"[dim]{msg}[/dim]"),
+            # )
 
             try:
                 asyncio.run(agent.run())

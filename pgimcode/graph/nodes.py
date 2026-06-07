@@ -43,6 +43,9 @@ def _get_settings(state) -> Settings:
     return Settings()
 
 
+_llm_cache: dict[str, ChatOpenAI] = {}
+
+
 def _build_llm(state) -> ChatOpenAI:
     settings = _get_settings(state)
     provider = settings.resolve_provider()
@@ -58,13 +61,21 @@ def _build_llm(state) -> ChatOpenAI:
 
     temperature = settings.llm_temperature
 
+    # Build cache key from all parameters that affect the LLM instance
+    cache_key = f"{provider}:{model}:{temperature}:{api_key}:{base_url}"
+    cached = _llm_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     kwargs = dict(model=model, temperature=temperature)
     if api_key:
         kwargs["api_key"] = api_key
     if base_url:
         kwargs["base_url"] = base_url
 
-    return ChatOpenAI(**kwargs)
+    llm = ChatOpenAI(**kwargs)
+    _llm_cache[cache_key] = llm
+    return llm
 
 
 def _build_system_prompt(state: dict) -> str:

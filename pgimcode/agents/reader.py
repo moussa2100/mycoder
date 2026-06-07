@@ -30,6 +30,11 @@ READER_PROMPT = """You are a **Code Reader Agent**. Your job is to explore, read
 6. If a search returns no results, try different queries or list_files to find the files manually
 7. Be thorough — the orchestrator depends on your findings to make decisions
 
+## Path Rules
+- Always use workspace-relative paths like `.`, `frontend`, or `frontend/index.html`
+- Never use absolute Windows paths like `C:\...`
+- Prefer `list_files` over shell-like commands such as `ls`
+
 Return your findings in a clear, structured format."""
 
 

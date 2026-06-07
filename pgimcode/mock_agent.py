@@ -93,16 +93,35 @@ def _parse_task(task: str) -> list[dict]:
             full_path = f"{folders[0]}/{full_path}"
 
     if content or file_names:
+        # Determine file type from extension and generate appropriate content
+        ext = Path(full_path).suffix.lower()
         if html_tag:
             body = f"<{html_tag}>{content}</{html_tag}>"
         else:
             body = content or "hello world"
-        html = f"<!DOCTYPE html>\n<html>\n<head><title>{content[:30] if content else 'Page'}</title></head>\n<body>\n  {body}\n</body>\n</html>\n"
+
+        if ext in (".html", ".htm"):
+            file_content = f"<!DOCTYPE html>\n<html>\n<head><title>{content[:30] if content else 'Page'}</title></head>\n<body>\n  {body}\n</body>\n</html>\n"
+        elif ext == ".md":
+            file_content = f"# {content[:50] if content else 'Title'}\n\n{body}\n"
+        elif ext == ".py":
+            file_content = f"# {content[:50] if content else 'Module'}\n\n{body}\n"
+        elif ext == ".json":
+            import json as _json
+            file_content = _json.dumps({"content": body}, indent=2) + "\n"
+        elif ext == ".txt":
+            file_content = f"{body}\n"
+        elif ext == ".css":
+            file_content = f"/* {content[:50] if content else 'Styles'} */\n\n{body}\n"
+        elif ext == ".js":
+            file_content = f"// {content[:50] if content else 'Script'}\n\n{body}\n"
+        else:
+            file_content = f"{body}\n"
 
         actions.append({
             "type": "write_file",
-            "params": {"path": full_path, "content": html},
-            "description": f"Create file: {full_path} ({len(html)} bytes)",
+            "params": {"path": full_path, "content": file_content},
+            "description": f"Create file: {full_path} ({len(file_content)} bytes)",
         })
 
     # If nothing detected, return a default set of actions
