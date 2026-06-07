@@ -58,7 +58,7 @@ class RealAgent:
 
         repo_summary = f"{repo_map.total_files} files, {repo_map.languages}"
         top_files = "\n".join(
-            f"  {rf.file.path.as_posix()} (score: {rf.score:.1f})"
+            f"  /{rf.file.path.as_posix()} (score: {rf.score:.1f})"
             for rf in ranked[:8]
         )
 
@@ -67,17 +67,17 @@ class RealAgent:
 
 ## Repository
 {repo_summary}
-Workspace: .
+Workspace root: /
 
 ## Top Files
 {top_files if top_files else 'No files found'}
 
 ## Tooling Rules
-- Use only the provided project tools.
-- For repo navigation, prefer `list_files`, `read_file`, `read_chunk`, `search_text`, and `search_symbol`.
-- Always use workspace-relative paths like `.`, `frontend`, or `frontend/index.html`.
+- Use DeepAgents native tools only: `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, and `execute`.
+- Always use virtual absolute repo paths like `/frontend/index.html`.
+- Treat `/` as the repository root.
 - Never use absolute Windows paths like `C:\\...`.
-- Never use shell-style file browsing commands like `ls` or `cat` when project tools exist.
+- Never invent custom pgimcode tool names like `edit_replace_block`, `list_files`, `search_text`, or `run_command`.
 
 Complete the task using the available tools. Be thorough, but keep user-facing narration concise."""
 

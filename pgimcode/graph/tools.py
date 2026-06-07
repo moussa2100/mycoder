@@ -381,14 +381,16 @@ def _wrap_verify_file(path: str) -> dict:
 def _wrap_write_file(path: str, content: str) -> dict:
     """Create a new file or overwrite an existing file with the given content. Creates parent directories if needed."""
     filepath = _workspace_path(path)
+    existed = filepath.exists()
     filepath.parent.mkdir(parents=True, exist_ok=True)
     filepath.write_text(content, encoding="utf-8")
+    verb = "Updated" if existed else "Created"
     return {
         "success": True,
         "path": _display_path(filepath),
         "size": len(content),
         "lines": content.count("\n") + 1,
-        "message": f"Created file: {path} ({len(content)} bytes, {content.count(chr(10)) + 1} lines)",
+        "message": f"{verb} file: {path} ({len(content)} bytes, {content.count(chr(10)) + 1} lines)",
     }
 
 

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from langchain_openai import ChatOpenAI
 from deepagents import create_deep_agent
+from deepagents.backends import LocalShellBackend
 
 from pgimcode.agents.reader import create_reader_subagent
 from pgimcode.agents.editor import create_editor_subagent
@@ -50,23 +51,20 @@ Delegate work to sub-agents using the built-in `task` tool:
 5. **Complete the full task** — Don't stop halfway through
 6. **Report clearly** — Summarize what was done when the task is complete
 
-You have direct access to all tools as well. Use them when a quick read or write is faster than delegating to a sub-agent.
+You have direct access to DeepAgents native tools as well. Use them when a quick read or write is faster than delegating to a sub-agent.
 
-## Path Rules
-- Always use workspace-relative paths like `.`, `frontend`, or `frontend/index.html`
-- Never use absolute Windows paths like `C:\...`
-- Never use shell-style file exploration tools like `ls` or `cat` when `list_files`, `read_file`, `read_chunk`, or `search_text` can do the job"""
+## Native Tool Rules
+- Use DeepAgents native tools: `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, and `execute`
+- Always use virtual absolute repo paths like `/frontend/index.html`
+- Treat `/` as the repository root
+- Never use Windows paths like `C:\\...`
+- Never invent custom tool names like `edit_replace_block`, `list_files`, `search_text`, or `run_command`"""
 
 
 def create_orchestrator(settings: "Settings", workspace_root=None):
     """Create the main orchestrator agent with all sub-agents and tools."""
     from pathlib import Path
-    from pgimcode.graph.tools import TOOL_DEFINITIONS
-
-    # Set workspace root for tools so paths resolve correctly
-    if workspace_root is not None:
-        import pgimcode.graph.tools as tmod
-        tmod._workspace_root = Path(workspace_root)
+    root = Path(workspace_root or ".").resolve()
 
     # Resolve provider and build the LLM
     provider = settings.resolve_provider()
@@ -88,19 +86,6 @@ def create_orchestrator(settings: "Settings", workspace_root=None):
 
     model = ChatOpenAI(**llm_kwargs)
 
-    # Collect all tool wrappers
-    from pgimcode.graph.tools import (
-        read_file, read_chunk, search_text, search_symbol,
-        list_files, write_file, edit_replace_block, edit_patch,
-        create_directory, verify_file, run_command, run_tests,
-    )
-
-    all_tools = [
-        read_file, read_chunk, search_text, search_symbol,
-        list_files, write_file, edit_replace_block, edit_patch,
-        create_directory, verify_file, run_command, run_tests,
-    ]
-
     # Build sub-agent configs
     subagents = [
         create_reader_subagent(),
@@ -110,11 +95,17 @@ def create_orchestrator(settings: "Settings", workspace_root=None):
         create_verifier_subagent(),
     ]
 
+    backend = LocalShellBackend(
+        root_dir=root,
+        virtual_mode=True,
+        inherit_env=True,
+    )
+
     agent = create_deep_agent(
         model=model,
-        tools=all_tools,
         system_prompt=ORCHESTRATOR_PROMPT,
         subagents=subagents,
+        backend=backend,
     )
 
     return agent

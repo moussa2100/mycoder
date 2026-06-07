@@ -37,6 +37,7 @@ class ChatRenderer:
         self._stream_active = False
         self._stream_chars = 0
         self._assistant_buffer = ""
+        self._suppress_live_stream = False
 
     def show_welcome(self) -> None:
         """Display welcome banner at chat start."""
@@ -93,39 +94,51 @@ class ChatRenderer:
         """Append a token from the LLM's current assistant message, no newline."""
         if not token:
             return
-        if not self._stream_active:
-            self._console.print()
-            header = Text()
-            header.append("  ● ", style="bold cyan")
-            header.append("Assistant", style="bold")
-            self._console.print(header)
-            self._console.file.write("  ")
-            self._stream_active = True
-            self._stream_chars = 0
+        if not self._assistant_buffer:
             self._assistant_buffer = ""
-        # Write raw to underlying file to avoid Rich's per-call newline buffering.
-        self._console.file.write(token)
-        self._console.file.flush()
-        self._stream_chars += len(token)
+            self._suppress_live_stream = False
         self._assistant_buffer += token
+
+        if self._should_suppress_live_stream(self._assistant_buffer):
+            self._suppress_live_stream = True
+            return
+
+        if not self._stream_active and self._should_start_live_stream(self._assistant_buffer, token):
+            self._print_assistant_header()
+            self._console.file.write(self._assistant_buffer)
+            self._console.file.flush()
+            self._stream_active = True
+            self._stream_chars = len(self._assistant_buffer)
+            return
+
+        if self._stream_active:
+            self._console.file.write(token)
+            self._console.file.flush()
+            self._stream_chars += len(token)
 
     def on_assistant_end(self, render_panel: bool = False) -> None:
         """Finalize the in-flight assistant text block."""
+        content = self._assistant_buffer.strip()
         if self._stream_active:
             self._console.file.write("\n")
             self._console.file.flush()
             self._stream_active = False
             self._stream_chars = 0
-            content = self._assistant_buffer.strip()
-            if render_panel and content:
-                self._console.print(Panel(
-                    Markdown(content),
-                    title="[bold cyan]Final response[/]",
-                    title_align="left",
-                    border_style="cyan",
-                    padding=(0, 1),
-                ))
-            self._assistant_buffer = ""
+        elif content and not render_panel:
+            self._print_assistant_header()
+            self._console.print(f"  {content}")
+
+        if render_panel and content:
+            self._console.print(Panel(
+                Markdown(content),
+                title="[bold cyan]Final response[/]",
+                title_align="left",
+                border_style="cyan",
+                padding=(0, 1),
+            ))
+
+        self._assistant_buffer = ""
+        self._suppress_live_stream = False
 
     def on_tool_call(self, name: str, args: dict | None = None) -> None:
         """Render a tool-call panel with name + JSON arguments."""
@@ -174,8 +187,8 @@ class ChatRenderer:
         if isinstance(value, dict):
             compacted = {}
             for key, item in value.items():
-                if isinstance(item, str) and key in {"content", "old_text", "new_text", "patch_text"}:
-                    compacted[key] = self._compact_string(item)
+                if isinstance(item, str) and key in {"content", "old_text", "new_text", "patch_text", "old_string", "new_string"}:
+                    compacted[f"{key}_summary"] = self._string_summary(item)
                 else:
                     compacted[key] = self._compact_tool_args(item)
             return compacted
@@ -191,6 +204,31 @@ class ChatRenderer:
         preview = value[:80].replace("\n", "\\n")
         suffix = "..." if len(value) > 80 else ""
         return f"<{len(value)} chars hidden: {preview}{suffix}>"
+
+    def _string_summary(self, value: str) -> str:
+        lines = value.count("\n") + 1
+        return f"{len(value)} chars hidden across {lines} line(s)"
+
+    def _print_assistant_header(self) -> None:
+        self._console.print()
+        header = Text()
+        header.append("  ● ", style="bold cyan")
+        header.append("Assistant", style="bold")
+        self._console.print(header)
+        self._console.file.write("  ")
+
+    def _should_start_live_stream(self, buffer: str, latest_token: str) -> bool:
+        stripped = buffer.strip()
+        if not stripped or self._suppress_live_stream:
+            return False
+        return len(stripped) >= 36 or latest_token.endswith((".", "!", "?", ":"))
+
+    def _should_suppress_live_stream(self, buffer: str) -> bool:
+        stripped = buffer.strip()
+        if not stripped:
+            return False
+        markdown_indicators = ("\n- ", "\n* ", "\n1. ", "```", "\n#", "|---")
+        return any(marker in stripped for marker in markdown_indicators)
 
     def end_turn(self, success: bool = True) -> None:
         """Print elapsed time at end of turn."""
