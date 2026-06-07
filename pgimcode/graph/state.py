@@ -18,6 +18,7 @@ class AgentState(BaseModel):
     messages: list[dict] = Field(default_factory=list)
     repo_map: dict | None = None
     plan: dict | None = None
+    discovery_mode: str = "full"
     carryover_context: str = ""
     recent_files: list[str] = Field(default_factory=list)
     research_goals: list[str] = Field(default_factory=list)

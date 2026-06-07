@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pgimcode.graph.tools import TOOL_DEFINITIONS, call_tool
 from pgimcode.discovery.repo_scanner import RepoScanner
-from pgimcode.discovery.repo_map import build_repo_map
+from pgimcode.discovery.repo_map import build_repo_map_from_files
 from pgimcode.discovery.language_detector import annotate_languages
 from pgimcode.intelligence.context_assembler import assemble_prompt_context
 from pgimcode.intelligence.evidence import compress_evidence, record_tool_evidence
@@ -14,6 +14,7 @@ from pgimcode.intelligence.investigation import build_investigation_packet
 from pgimcode.intelligence.task_board import mark_stage
 from pgimcode.prompts.policies import build_policy_block
 from pgimcode.retrieval.hybrid_ranker import hybrid_rank_files
+from pgimcode.retrieval.query_intent import should_use_fast_followup_scan
 from pgimcode.tools.ranker import rank_files_by_relevance
 from pgimcode.planner import TaskPlanner
 from pgimcode.config import Settings
@@ -144,6 +145,15 @@ def _build_research_task(task: str, state: dict) -> str:
     return task + "\n\nRelevant session context:\n" + "\n".join(f"- {item}" for item in hints)
 
 
+def _scan_for_discovery(root: Path, task: str, recent_files: list[str]) -> tuple[list, str]:
+    scanner = RepoScanner(root=root)
+    if should_use_fast_followup_scan(task, recent_files):
+        targeted = annotate_languages(scanner.scan_targets(recent_files, sibling_limit=16))
+        if targeted:
+            return targeted, "fast"
+    return annotate_languages(scanner.scan()), "full"
+
+
 # ─────────────────────────────────────────────────────────────
 # Setup nodes (unchanged from original)
 # ─────────────────────────────────────────────────────────────
@@ -168,11 +178,10 @@ def intake_node(state) -> dict:
 def discovery_node(state) -> dict:
     s = _to_dict(state)
     current = s.get("turn", 0)
+    task = s.get("task", "")
     root = _get_workspace_root()
-    scanner = RepoScanner(root=root)
-    scanned = scanner.scan()
-    scanned = annotate_languages(scanned)
-    repo_map = build_repo_map(scanner)
+    scanned, discovery_mode = _scan_for_discovery(root, task, s.get("recent_files", []))
+    repo_map = build_repo_map_from_files(root, scanned)
     repo_map_dict = {
         "root": str(repo_map.root),
         "languages": repo_map.languages,
@@ -189,6 +198,7 @@ def discovery_node(state) -> dict:
     return {
         "turn": current + 1,
         "current_node": "planning",
+        "discovery_mode": discovery_mode,
         "repo_map": repo_map_dict,
     }
 
@@ -200,13 +210,18 @@ def planning_node(state) -> dict:
     research_task = _build_research_task(task, s)
     repo_map_dict = s.get("repo_map")
     root = _get_workspace_root()
-    scanner = RepoScanner(root=root)
-    files = scanner.scan()
-    files = annotate_languages(files)
+    discovery_mode = s.get("discovery_mode", "full")
+    files, planning_scan_mode = _scan_for_discovery(root, task, s.get("recent_files", []))
     ranked = rank_files_by_relevance(research_task, files, root, max_results=20)
     hybrid_hits = hybrid_rank_files(research_task, files, root, max_results=12, preferred_paths=s.get("recent_files", []))
+    if planning_scan_mode == "fast" and not hybrid_hits:
+        files = annotate_languages(RepoScanner(root=root).scan())
+        ranked = rank_files_by_relevance(research_task, files, root, max_results=20)
+        hybrid_hits = hybrid_rank_files(research_task, files, root, max_results=12, preferred_paths=s.get("recent_files", []))
+        planning_scan_mode = "full_fallback"
+
     from pgimcode.discovery.repo_map import RepoMap
-    if repo_map_dict:
+    if repo_map_dict and planning_scan_mode == discovery_mode:
         repo_map_for_planner = RepoMap(
             root=Path(repo_map_dict["root"]),
             languages=repo_map_dict.get("languages", {}),
@@ -221,7 +236,7 @@ def planning_node(state) -> dict:
             top_dirs=repo_map_dict.get("top_dirs", []),
         )
     else:
-        repo_map_for_planner = build_repo_map(scanner)
+        repo_map_for_planner = build_repo_map_from_files(root, files)
     planner = TaskPlanner(repo_map=repo_map_for_planner, ranked_files=ranked)
     plan = planner.plan(task)
     candidate_files = [hit.to_dict() for hit in hybrid_hits]
@@ -246,6 +261,7 @@ def planning_node(state) -> dict:
     return {
         "turn": current + 1,
         "current_node": "decision",
+        "discovery_mode": planning_scan_mode,
         "plan": plan_dict,
         "research_goals": investigation["research_goals"],
         "hypotheses": investigation["hypotheses"],

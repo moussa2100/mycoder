@@ -77,13 +77,12 @@ class RepoMap:
         return "\n".join(lines)
 
 
-def build_repo_map(scanner: RepoScanner) -> RepoMap:
-    files = scanner.scan()
+def build_repo_map_from_files(root: Path, files: list[ScannedFile]) -> RepoMap:
     files = annotate_languages(files)
-    index = FileIndex(files=files, root=scanner.root)
+    index = FileIndex(files=files, root=root)
 
     return RepoMap(
-        root=scanner.root,
+        root=root,
         languages=dict(index.language_counts()),
         frameworks=detect_frameworks(files),
         entry_points=find_entry_points(files),
@@ -95,3 +94,7 @@ def build_repo_map(scanner: RepoScanner) -> RepoMap:
         total_size=index.total_size(),
         top_dirs=index.top_directories(),
     )
+
+
+def build_repo_map(scanner: RepoScanner) -> RepoMap:
+    return build_repo_map_from_files(scanner.root, scanner.scan())

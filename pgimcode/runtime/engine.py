@@ -74,7 +74,11 @@ class GraphRuntimeEngine:
         data = self._snapshot_data(self._state)
         if node_name == "discovery":
             repo_map = state_update.get("repo_map", {})
-            details = f"Scanned repository: {repo_map.get('total_files', 0)} files, languages={', '.join(repo_map.get('languages', {}).keys()) or 'unknown'}"
+            mode = state_update.get("discovery_mode", self._state.get("discovery_mode", "full"))
+            if mode == "fast":
+                details = f"Fast-scanned likely follow-up targets: {repo_map.get('total_files', 0)} files, languages={', '.join(repo_map.get('languages', {}).keys()) or 'unknown'}"
+            else:
+                details = f"Scanned repository: {repo_map.get('total_files', 0)} files, languages={', '.join(repo_map.get('languages', {}).keys()) or 'unknown'}"
             await self._emit(EventType.REPO_SCANNING, details, data=data)
         elif node_name == "planning":
             await self._emit(EventType.RESEARCH_STARTED, "Built research goals and candidate files", data=data)

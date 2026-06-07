@@ -31,8 +31,12 @@ DEFAULT_ALLOWLIST: set[str] = {
     "mkdir", "cp", "mv", "rm", "touch",
     "find", "grep", "rg", "head", "tail", "sort", "uniq",
     # Windows
-    "cmd", "dir", "findstr", "where", "tree",
+    "cmd", "dir", "type", "more", "findstr", "where", "tree",
     "powershell", "pwsh",
+}
+
+WINDOWS_CMD_BUILTINS: set[str] = {
+    "dir", "echo", "type", "more", "mkdir",
 }
 
 
@@ -49,9 +53,26 @@ class ShellRunner:
             raise ValueError("Empty command")
         cmd_name = command[0]
         # Handle paths like ./venv/bin/pytest or absolute paths
-        base = Path(cmd_name).name
+        base = Path(cmd_name).name.lower()
         if base not in self.allowlist:
             raise ValueError(f"Command '{base}' not in allowlist")
+
+    def _prepare_command(self, command: list[str]) -> tuple[list[str], bool]:
+        """Translate platform-specific builtins into executable commands."""
+        if not command:
+            return command, False
+
+        base = Path(command[0]).name.lower()
+        if subprocess.os.name == "nt" and base in WINDOWS_CMD_BUILTINS:
+            normalized_args = [command[0]]
+            for arg in command[1:]:
+                if base in {"dir", "type", "more", "mkdir"} and arg and not arg.startswith(("/", "-")):
+                    normalized_args.append(arg.replace("/", "\\"))
+                else:
+                    normalized_args.append(arg)
+            return ["cmd", "/c", *normalized_args], False
+
+        return command, False
 
     def _check_cwd(self, cwd: Path) -> Path:
         resolved = cwd.resolve()
@@ -74,17 +95,18 @@ class ShellRunner:
         cwd = cwd or self.workspace_root
         self._check_command(command)
         checked_cwd = self._check_cwd(cwd)
+        prepared_command, use_shell = self._prepare_command(command)
 
         start = time.perf_counter()
         try:
             proc = subprocess.run(
-                command,
+                prepared_command,
                 cwd=checked_cwd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
                 env={**subprocess.os.environ, **(env or {})},
-                shell=shell,
+                shell=shell or use_shell,
             )
             duration_ms = (time.perf_counter() - start) * 1000
             return CommandResult(
