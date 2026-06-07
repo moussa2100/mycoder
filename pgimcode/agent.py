@@ -147,7 +147,7 @@ class RealAgent:
     def _render_message(
         self, msg, seen_tool_call_ids: set[str], seen_tool_result_ids: set[str]
     ) -> None:
-        """Render a single LangGraph message (assistant tool-calls or tool result)."""
+        """Render a single agent message (assistant tool-calls or tool result)."""
         tool_calls = getattr(msg, "tool_calls", None)
         if tool_calls:
             for tc in (tool_calls if isinstance(tool_calls, list) else [tool_calls]):
