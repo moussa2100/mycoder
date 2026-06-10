@@ -9,6 +9,7 @@ from enum import Enum
 class ModelProvider(str, Enum):
     OPENAI = "openai"
     DEEPSEEK = "deepseek"
+    GEMINI = "gemini"
 
 
 @dataclass
@@ -77,6 +78,34 @@ AVAILABLE_MODELS: dict[str, ModelInfo] = {
         api_base_url="https://api.deepseek.com/v1",
         pricing_note="$0.55/$2.19 per 1M tokens",
     ),
+    # Gemini models (Google AI via OpenAI-compatible endpoint)
+    "gemini-2.0-flash": ModelInfo(
+        id="gemini-2.0-flash",
+        name="Gemini 2.0 Flash",
+        provider=ModelProvider.GEMINI,
+        context_window=128000,
+        description="Google Gemini 2.0 Flash. Fast, cost-effective.",
+        api_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        pricing_note="$1.50/$9.00 per 1M tokens",
+    ),
+    "gemini-2.5-pro": ModelInfo(
+        id="gemini-2.5-pro",
+        name="Gemini 2.5 Pro",
+        provider=ModelProvider.GEMINI,
+        context_window=128000,
+        description="Google Gemini 2.5 Pro. Premium reasoning & coding.",
+        api_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        pricing_note="$2.00/$12.00 per 1M tokens",
+    ),
+    "gemini-2.0-flash-lite": ModelInfo(
+        id="gemini-2.0-flash-lite",
+        name="Gemini 2.0 Flash Lite",
+        provider=ModelProvider.GEMINI,
+        context_window=128000,
+        description="Google Gemini 2.0 Flash Lite. Cheapest option.",
+        api_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        pricing_note="$0.25/$1.50 per 1M tokens",
+    ),
 }
 
 
@@ -106,5 +135,6 @@ def get_default_model_for_provider(provider: ModelProvider) -> str:
     defaults = {
         ModelProvider.OPENAI: "gpt-4o",
         ModelProvider.DEEPSEEK: "deepseek-chat",
+        ModelProvider.GEMINI: "gemini-2.0-flash",
     }
     return defaults.get(provider, "gpt-4o")

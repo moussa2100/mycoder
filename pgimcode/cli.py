@@ -744,7 +744,7 @@ def plan(
 
 @app.command(name="models")
 def list_models(
-    provider: str = typer.Option("all", "--provider", "-p", help="Filter by provider: openai, deepseek, or all"),
+    provider: str = typer.Option("all", "--provider", "-p", help="Filter by provider: openai, deepseek, gemini, or all"),
 ) -> None:
     """List all available AI models."""
     from rich.console import Console
@@ -775,7 +775,7 @@ def list_models(
             models = get_models_by_provider(prov)
         except ValueError:
             console.print(f"[red]Unknown provider: {provider}[/]")
-            console.print(f"[dim]Available: openai, deepseek, all[/]")
+            console.print(f"[dim]Available: openai, deepseek, gemini, all[/]")
             raise typer.Exit(code=1)
 
     current_prov = None

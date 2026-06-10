@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     api_provider: str = "openai"
     api_base_url: str | None = None
     deepseek_api_key: str | None = None
+    gemini_api_key: str | None = None
 
     @model_validator(mode="after")
     def _apply_saved_prefs(self) -> "Settings":
@@ -91,7 +92,9 @@ class Settings(BaseSettings):
             return self.deepseek_api_key
         if self.api_provider == "openai" and self.openai_api_key:
             return self.openai_api_key
-        return self.deepseek_api_key or self.openai_api_key
+        if self.api_provider == "gemini" and self.gemini_api_key:
+            return self.gemini_api_key
+        return self.deepseek_api_key or self.openai_api_key or self.gemini_api_key
 
     def resolve_provider(self) -> str:
         """Auto-detect the best provider based on available (non-placeholder) keys."""
@@ -102,13 +105,18 @@ class Settings(BaseSettings):
 
         has_openai = _is_real(self.openai_api_key)
         has_deepseek = _is_real(self.deepseek_api_key)
+        has_gemini = _is_real(self.gemini_api_key)
 
         if self.api_provider == "deepseek" and has_deepseek:
             return "deepseek"
         if self.api_provider == "openai" and has_openai:
             return "openai"
+        if self.api_provider == "gemini" and has_gemini:
+            return "gemini"
         if has_deepseek:
             return "deepseek"
         if has_openai:
             return "openai"
+        if has_gemini:
+            return "gemini"
         return self.api_provider
