@@ -53,10 +53,12 @@ class Settings(BaseSettings):
     def _apply_saved_prefs(self) -> "Settings":
         """Restore the last chosen model unless explicitly set via env/.env."""
         if "model_name" in self.model_fields_set:
+            self._normalize_model_choice()
             return self
         try:
             prefs = json.loads(_prefs_path().read_text(encoding="utf-8"))
         except (OSError, ValueError):
+            self._normalize_model_choice()
             return self
         if isinstance(prefs, dict) and prefs.get("model_name"):
             self.model_name = prefs["model_name"]
@@ -64,7 +66,33 @@ class Settings(BaseSettings):
                 self.api_provider = prefs["api_provider"]
             if "api_base_url" not in self.model_fields_set:
                 self.api_base_url = prefs.get("api_base_url")
+        self._normalize_model_choice()
         return self
+
+    def _normalize_model_choice(self) -> None:
+        """Migrate stale saved model IDs to a currently supported default."""
+        from pgimcode.models import (
+            AVAILABLE_MODELS,
+            ModelProvider,
+            get_default_model_for_provider,
+        )
+
+        info = AVAILABLE_MODELS.get(self.model_name)
+        if info is not None:
+            self.api_provider = info.provider.value
+            if not info.api_base_url:
+                self.api_base_url = None
+            return
+
+        try:
+            provider = ModelProvider(self.api_provider)
+        except ValueError:
+            provider = ModelProvider.GEMINI
+
+        self.model_name = get_default_model_for_provider(provider)
+        self.api_provider = provider.value
+        fallback = AVAILABLE_MODELS.get(self.model_name)
+        self.api_base_url = fallback.api_base_url or None if fallback else None
 
     def save_model_choice(self) -> None:
         """Persist the current model selection so future sessions reuse it."""

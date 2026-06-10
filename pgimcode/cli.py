@@ -786,7 +786,7 @@ def list_models(
             current_prov = model.provider
 
         ctx = f"{model.context_window // 1000}K"
-        cursor = "→" if model.id == current_model else " "
+        cursor = ">" if model.id == current_model else " "
         table.add_row(
             f"{cursor}{i}",
             prov_label,

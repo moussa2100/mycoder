@@ -112,7 +112,7 @@ class ModelSelector:
                 current_provider = model.provider
 
             ctx_str = f"{model.context_window // 1000}K"
-            cursor = "→" if model.id == current_model_id else " "
+            cursor = ">" if model.id == current_model_id else " "
 
             table.add_row(
                 f"{cursor}{i}",
@@ -165,5 +165,5 @@ class ModelSelector:
         info = resolve_model_info(model_id)
         settings.model_name = model_id
         settings.api_provider = info.provider.value
-        settings.api_base_url = info.api_base_url
+        settings.api_base_url = info.api_base_url or None
         settings.save_model_choice()

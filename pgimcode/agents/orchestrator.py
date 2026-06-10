@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from langchain_openai import ChatOpenAI
 from deepagents import CompiledSubAgent, create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend, StoreBackend
 from deepagents.middleware.summarization import create_summarization_tool_middleware
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_openai import ChatOpenAI
 from langgraph.store.memory import InMemoryStore
 
 from pgimcode.agents.reader import create_reader_subagent
@@ -166,21 +167,26 @@ def create_orchestrator(settings: "Settings", workspace_root=None, store=None):
 
     if provider == "deepseek":
         model_name = settings.model_name if settings.model_name.startswith("deepseek") else "deepseek-chat"
-        api_key = settings.deepseek_api_key
-        base_url = settings.api_base_url or "https://api.deepseek.com/v1"
+        llm_kwargs = dict(model=model_name, temperature=settings.llm_temperature)
+        if settings.deepseek_api_key:
+            llm_kwargs["api_key"] = settings.deepseek_api_key
+        llm_kwargs["base_url"] = settings.api_base_url or "https://api.deepseek.com/v1"
+        model = ChatOpenAI(**llm_kwargs)
     else:
-        # Default to Gemini
+        # Use the native Gemini integration. The OpenAI-compatible Gemini endpoint
+        # does not preserve Gemini thought signatures during tool-call turns, which
+        # can fail with: "Function call is missing a thought_signature".
         model_name = settings.model_name if settings.model_name.startswith("gemini") else "gemini-3.5-flash"
-        api_key = settings.gemini_api_key
-        base_url = settings.api_base_url or "https://generativelanguage.googleapis.com/v1beta/openai/"
-
-    llm_kwargs = dict(model=model_name, temperature=settings.llm_temperature)
-    if api_key:
-        llm_kwargs["api_key"] = api_key
-    if base_url:
-        llm_kwargs["base_url"] = base_url
-
-    model = ChatOpenAI(**llm_kwargs)
+        llm_kwargs = dict(model=model_name, temperature=settings.llm_temperature)
+        if settings.gemini_api_key:
+            llm_kwargs["api_key"] = settings.gemini_api_key
+        if model_name.startswith("gemini-3"):
+            llm_kwargs["thinking_level"] = "low"
+        elif model_name.startswith("gemini-2.5"):
+            # Disable 2.5 thinking where supported; this avoids tool-call replay
+            # issues and keeps CLI latency/cost predictable.
+            llm_kwargs["thinking_budget"] = 0
+        model = ChatGoogleGenerativeAI(**llm_kwargs)
 
     # Build sub-agent configs
     subagents = [

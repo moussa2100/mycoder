@@ -47,9 +47,9 @@ from pgimcode.config import Settings
 from pgimcode.agents.orchestrator import create_orchestrator
 
 settings = Settings()
-settings.api_provider = "openai"
-settings.openai_api_key = "sk-test-fake"
-settings.model_name = "gpt-4o"
+settings.api_provider = "gemini"
+settings.gemini_api_key = "AI-test-fake"
+settings.model_name = "gemini-3.5-flash"
 
 try:
     agent = create_orchestrator(settings, workspace_root=str(store_dir), store=store)

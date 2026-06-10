@@ -745,7 +745,7 @@ class ChatSession:
         # Determine if we should use the real LLM agent
         can_use_real = self._use_real or (
             bool(self._settings.deepseek_api_key and not self._settings.deepseek_api_key.endswith("-here"))
-            or bool(self._settings.openai_api_key and not self._settings.openai_api_key.endswith("-here"))
+            or bool(self._settings.gemini_api_key and not self._settings.gemini_api_key.endswith("-here"))
         )
 
         if can_use_real:

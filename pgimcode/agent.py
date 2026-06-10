@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from pathlib import Path
+import json
 
 from pgimcode.config import Settings
 from pgimcode.context_schema import AgentContext
@@ -50,7 +52,6 @@ class RealAgent:
         """Run the deepagents orchestrator and surface failures as events."""
         from pgimcode.agents.orchestrator import create_orchestrator
         from pgimcode.memory.store import PersistentFileStore
-        from pathlib import Path
 
         try:
             await self._bus.publish(Event(
@@ -233,8 +234,7 @@ class RealAgent:
             success = True
             text = content if isinstance(content, str) else str(content)
             try:
-                import json as _json
-                parsed = _json.loads(text)
+                parsed = json.loads(text)
                 if isinstance(parsed, dict):
                     if parsed.get("success") is False:
                         success = False
@@ -330,7 +330,6 @@ class RealAgent:
         if role == "tool" or name:
             # Try to parse JSON result
             try:
-                import json
                 data = json.loads(content) if isinstance(content, str) else content
                 if isinstance(data, dict):
                     msg = data.get("message", "")
@@ -361,7 +360,6 @@ class RealAgent:
         return EventType.SESSION_STARTED
 
     def _resolve_root(self) -> Path:
-        from pathlib import Path
         cwd = Path.cwd().resolve()
         for parent in [cwd] + list(cwd.parents):
             if (parent / "pyproject.toml").exists() or (parent / ".env").exists():
@@ -420,7 +418,3 @@ class RealAgent:
 
     def cancel(self) -> None:
         self.cancelled = True
-
-
-# pathlib import needed at module level for _resolve_root
-from pathlib import Path
