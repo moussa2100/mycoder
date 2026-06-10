@@ -18,6 +18,7 @@ from rich.syntax import Syntax
 from pgimcode.config import Settings
 from pgimcode.events import Event, EventBus, EventType
 from pgimcode.memory.store import PersistentFileStore
+from pgimcode.skills import SkillManager
 
 if TYPE_CHECKING:
     from pgimcode.approval import ApprovalGate
@@ -331,6 +332,7 @@ class ChatRenderer:
         self._console.print()
         help_panel = Panel(
             "[bold cyan]/model[/]     Switch AI model\n"
+            "[bold cyan]/skills[/]    List, view, or activate skills\n"
             "[bold cyan]/quit[/]      Exit chat session\n"
             "[bold cyan]/help[/]      Show this help\n"
             "[bold cyan]/clear[/]     Clear the screen\n"
@@ -408,6 +410,7 @@ class ChatSession:
         self._running = False
         self._plan_only = False
         self._use_real = use_real
+        self._active_skills: list[str] = []
 
     @property
     def session_id(self) -> str:
@@ -506,7 +509,7 @@ class ChatSession:
         store,
         bus: EventBus,
     ) -> None:
-        """Handle /model, /quit, /help, /clear, /sessions, /plan commands."""
+        """Handle /model, /quit, /help, /clear, /sessions, /plan, /skills commands."""
         cmd = line.strip().lower()
 
         if cmd == "/quit" or cmd == "/q":
@@ -551,8 +554,101 @@ class ChatSession:
             state = "[green]ON[/]" if self._plan_only else "[dim]OFF[/]"
             self._console.print(f"  PLAN Plan-only mode: {state}")
 
+        elif cmd.startswith("/skills"):
+            await self._handle_skills_command(cmd, renderer)
+
         else:
             self._console.print(f"  [dim]Unknown command: {line}. Type /help for commands.[/]")
+
+    async def _handle_skills_command(self, cmd: str, renderer: ChatRenderer) -> None:
+        """Handle /skills subcommands: list, view <name>, use <name>, deactivate."""
+        from rich.table import Table
+        from rich.panel import Panel
+        from rich.markdown import Markdown
+
+        manager = SkillManager()
+        parts = cmd.split(maxsplit=2)
+        subcmd = parts[1] if len(parts) > 1 else "list"
+
+        if subcmd == "list":
+            skills = manager.list_skills()
+            if not skills:
+                self._console.print("  [dim]No skills found in /skills/ directory.[/]")
+                return
+
+            table = Table(title="[bold cyan]Available Skills[/]", border_style="cyan")
+            table.add_column("#", style="dim", justify="right", width=3)
+            table.add_column("Name", style="bold")
+            table.add_column("Category", style="dim")
+            table.add_column("Description")
+            table.add_column("Active", justify="center")
+
+            for i, skill in enumerate(skills, 1):
+                active_mark = "[green]YES[/]" if skill.name in self._active_skills else ""
+                table.add_row(
+                    str(i),
+                    skill.name,
+                    skill.category,
+                    skill.description,
+                    active_mark,
+                )
+            self._console.print()
+            self._console.print(table)
+            self._console.print()
+            self._console.print(
+                "[dim]Use [bold]/skills use <name>[/] to activate a skill, "
+                "[bold]/skills view <name>[/] to see its content, "
+                "[bold]/skills deactivate <name>[/] to turn it off.[/]"
+            )
+
+        elif subcmd == "view" and len(parts) >= 3:
+            skill_name = parts[2]
+            content = manager.load_skill(skill_name)
+            if content is None:
+                self._console.print(f"  [red]Skill not found:[/] {skill_name}")
+                return
+            self._console.print()
+            self._console.print(Panel(
+                Markdown(content),
+                title=f"[bold cyan]Skill: {skill_name}[/]",
+                title_align="left",
+                border_style="cyan",
+                padding=(0, 1),
+            ))
+
+        elif subcmd == "use" and len(parts) >= 3:
+            skill_name = parts[2]
+            info = manager.get_skill(skill_name)
+            if info is None:
+                self._console.print(f"  [red]Skill not found:[/] {skill_name}")
+                return
+            if info.name not in self._active_skills:
+                self._active_skills.append(info.name)
+            self._console.print(f"  [green]Activated skill:[/] {info.name}")
+
+        elif subcmd == "deactivate" and len(parts) >= 3:
+            skill_name = parts[2]
+            info = manager.get_skill(skill_name)
+            if info is None:
+                self._console.print(f"  [red]Skill not found:[/] {skill_name}")
+                return
+            if info.name in self._active_skills:
+                self._active_skills.remove(info.name)
+                self._console.print(f"  [yellow]Deactivated skill:[/] {info.name}")
+            else:
+                self._console.print(f"  [dim]Skill '{info.name}' is not active.[/]")
+
+        elif subcmd == "deactivate":
+            if self._active_skills:
+                self._active_skills.clear()
+                self._console.print("  [yellow]All skills deactivated.[/]")
+            else:
+                self._console.print("  [dim]No skills are currently active.[/]")
+
+        else:
+            self._console.print(
+                "  [dim]Usage: /skills list | view <name> | use <name> | deactivate [<name>][/]"
+            )
 
     def _is_coding_task(self, task: str) -> bool:
         """Check if the task looks like a coding request."""
@@ -635,6 +731,7 @@ class ChatSession:
                 renderer=renderer,
                 recent_files=list(self._recent_changed_files),
                 conversation_history=list(self._history),
+                active_skills=list(self._active_skills),
             )
             try:
                 await agent.run()

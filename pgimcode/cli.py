@@ -28,6 +28,7 @@ from pgimcode.tools.test_runner import run_tests
 from pgimcode.models import AVAILABLE_MODELS, ModelProvider, get_models_by_provider, resolve_model_info
 from pgimcode.chat import ChatSession
 from pgimcode.input_handler import SlashCommandListener, ModelSelector
+from pgimcode.skills import SkillManager
 
 app = typer.Typer(no_args_is_help=False, add_completion=False, invoke_without_command=True)
 
@@ -800,6 +801,87 @@ def list_models(
     console.print()
     console.print(f"[dim]Current model:[/] [bold cyan]{current_model}[/]")
     console.print("[dim]Set via --model flag, /model during session, or PGIMCODE_MODEL_NAME env var[/]")
+
+
+@app.command(name="skills")
+def skills_command(
+    action: str = typer.Argument("list", help="Action: list, view, use, deactivate"),
+    name: str | None = typer.Argument(None, help="Skill name (required for view/use/deactivate)"),
+) -> None:
+    """List, view, or activate coding skills."""
+    from rich.console import Console
+    from rich.table import Table
+    from rich.panel import Panel
+    from rich.markdown import Markdown
+
+    console = Console()
+    manager = SkillManager()
+
+    if action == "list":
+        skills = manager.list_skills()
+        if not skills:
+            console.print("[dim]No skills found in /skills/ directory.[/]")
+            return
+
+        table = Table(title="[bold cyan]Available Skills[/]", border_style="cyan")
+        table.add_column("#", style="dim", justify="right", width=3)
+        table.add_column("Name", style="bold")
+        table.add_column("Category", style="dim")
+        table.add_column("Description")
+
+        for i, skill in enumerate(skills, 1):
+            table.add_row(str(i), skill.name, skill.category, skill.description)
+
+        console.print()
+        console.print(table)
+        console.print()
+        console.print(
+            "[dim]Use [bold]pgimcode skills use <name>[/] to activate a skill, "
+            "[bold]pgimcode skills view <name>[/] to see its content.[/]"
+        )
+
+    elif action == "view":
+        if not name:
+            console.print("[red]Error:[/] skill name required. Usage: pgimcode skills view <name>")
+            raise typer.Exit(code=1)
+        content = manager.load_skill(name)
+        if content is None:
+            console.print(f"[red]Skill not found:[/] {name}")
+            raise typer.Exit(code=1)
+        console.print()
+        console.print(Panel(
+            Markdown(content),
+            title=f"[bold cyan]Skill: {name}[/]",
+            title_align="left",
+            border_style="cyan",
+            padding=(0, 1),
+        ))
+
+    elif action == "use":
+        if not name:
+            console.print("[red]Error:[/] skill name required. Usage: pgimcode skills use <name>")
+            raise typer.Exit(code=1)
+        info = manager.get_skill(name)
+        if info is None:
+            console.print(f"[red]Skill not found:[/] {name}")
+            raise typer.Exit(code=1)
+        console.print(f"[green]Skill '{info.name}' is available.[/]")
+        console.print(f"[dim]Activate it during a chat session with /skills use {info.name}[/]")
+
+    elif action == "deactivate":
+        if not name:
+            console.print("[yellow]Use /skills deactivate <name> during a chat session.[/]")
+        else:
+            info = manager.get_skill(name)
+            if info is None:
+                console.print(f"[red]Skill not found:[/] {name}")
+                raise typer.Exit(code=1)
+            console.print(f"[yellow]Use /skills deactivate {info.name} during a chat session.[/]")
+
+    else:
+        console.print(f"[red]Unknown action: {action}[/]")
+        console.print("[dim]Usage: pgimcode skills [list|view|use|deactivate] [name][/]")
+        raise typer.Exit(code=1)
 
 
 @app.command(name="chat")

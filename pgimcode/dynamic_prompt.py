@@ -95,6 +95,26 @@ class DynamicPromptMiddleware(AgentMiddleware):
                 f"Session ID: {session_id}"
             )
 
+        # ── Active skills ──
+        active_skills = getattr(ctx, "active_skills", [])
+        if active_skills:
+            from pgimcode.skills import SkillManager
+            manager = SkillManager()
+            skill_sections: list[str] = []
+            for skill_name in active_skills:
+                content = manager.load_skill(skill_name)
+                if content:
+                    skill_sections.append(
+                        f"## Active Skill: {skill_name}\n"
+                        f"{content.strip()}"
+                    )
+            if skill_sections:
+                sections.append(
+                    "## Active Skills\n"
+                    "The following skills are activated for this session:\n"
+                    + "\n\n".join(skill_sections)
+                )
+
         # ── Recent files ──
         recent_files = getattr(ctx, "recent_files", [])
         if recent_files:

@@ -29,6 +29,7 @@ class RealAgent:
         renderer=None,
         recent_files: list[str] | None = None,
         conversation_history: list[tuple[str, bool]] | None = None,
+        active_skills: list[str] | None = None,
     ):
         self._bus = bus
         self._session_id = session_id
@@ -42,6 +43,7 @@ class RealAgent:
         self.renderer = renderer
         self._recent_files = recent_files or []
         self._conversation_history = conversation_history or []
+        self._active_skills = active_skills or []
         self._workspace_root = self._resolve_root()
 
     async def run(self) -> None:
@@ -77,6 +79,7 @@ class RealAgent:
                 session_id=self._session_id,
                 recent_files=list(self._recent_files),
                 conversation_history=list(self._conversation_history),
+                active_skills=list(self._active_skills),
                 preferences={"verbose": True},
             )
 

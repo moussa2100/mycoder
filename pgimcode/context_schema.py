@@ -25,6 +25,7 @@ class AgentContext:
         session_id: Current session ULID.
         recent_files: Files changed in prior turns of a chat session.
         conversation_history: Prior task/success pairs for context carryover.
+        active_skills: List of skill names currently activated by the user.
         extra: Catch-all for provider-specific or future fields.
     """
     mode: str = "build"
@@ -34,4 +35,5 @@ class AgentContext:
     session_id: str = ""
     recent_files: list[str] = field(default_factory=list)
     conversation_history: list[tuple[str, bool]] = field(default_factory=list)
+    active_skills: list[str] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
