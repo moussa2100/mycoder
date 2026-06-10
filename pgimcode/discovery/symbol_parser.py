@@ -99,11 +99,8 @@ def _extract_functions_python(root, source: str) -> list[Symbol]:
             name_node = node.child_by_field_name("name")
             if name_node:
                 name = _get_node_text(name_node, source)
-                sig_parts = [name, "("]
                 params = node.child_by_field_name("parameters")
-                if params:
-                    sig_parts.append(_get_node_text(params, source))
-                sig_parts.append(")")
+                sig_parts = [name, _get_node_text(params, source) if params else "()"]
                 # return type
                 ret = node.child_by_field_name("return_type")
                 if ret:

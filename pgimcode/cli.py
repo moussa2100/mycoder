@@ -48,10 +48,7 @@ def default_callback(
     settings = Settings()
 
     if model:
-        info = resolve_model_info(model)
-        settings.model_name = model
-        settings.api_provider = info.provider.value
-        settings.api_base_url = info.api_base_url
+        ModelSelector.apply_model_selection(settings, model)
 
     console = Console()
 
@@ -136,10 +133,7 @@ def run(
     settings = Settings()
 
     if model:
-        info = resolve_model_info(model)
-        settings.model_name = model
-        settings.api_provider = info.provider.value
-        settings.api_base_url = info.api_base_url
+        ModelSelector.apply_model_selection(settings, model)
 
     # Disable color if requested
     if no_color:
@@ -821,10 +815,7 @@ def chat_command(
     settings = Settings()
 
     if model:
-        info = resolve_model_info(model)
-        settings.model_name = model
-        settings.api_provider = info.provider.value
-        settings.api_base_url = info.api_base_url
+        ModelSelector.apply_model_selection(settings, model)
 
     if no_color:
         settings.color_enabled = False

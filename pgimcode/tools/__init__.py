@@ -20,6 +20,9 @@ _EXPORTS = {
     "rg_search_symbol": ("pgimcode.tools.grep", "rg_search_symbol"),
     "find_symbol": ("pgimcode.tools.symbols", "find_symbol"),
     "find_references": ("pgimcode.tools.symbols", "find_references"),
+    "create_code_tools": ("pgimcode.tools.code_reader", "create_code_tools"),
+    "build_outline": ("pgimcode.tools.code_reader", "build_outline"),
+    "is_code_file": ("pgimcode.tools.code_reader", "is_code_file"),
     "RankedFile": ("pgimcode.tools.ranker", "RankedFile"),
     "extract_keywords": ("pgimcode.tools.ranker", "extract_keywords"),
     "rank_files_by_relevance": ("pgimcode.tools.ranker", "rank_files_by_relevance"),
@@ -57,6 +60,10 @@ __all__ = [
     # symbols
     "find_symbol",
     "find_references",
+    # code_reader (tree-sitter)
+    "create_code_tools",
+    "build_outline",
+    "is_code_file",
     # ranker
     "RankedFile",
     "extract_keywords",

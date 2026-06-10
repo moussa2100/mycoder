@@ -1,14 +1,20 @@
 """Application settings."""
 
+import json
 from pathlib import Path
 
 from platformdirs import user_config_dir
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _prefs_path() -> Path:
+    """Path to the persisted user preferences file (last chosen model, etc.)."""
+    return Path(user_config_dir("pgimcode")) / "prefs.json"
+
+
 class Settings(BaseSettings):
-    """pgimcode settings, sourced from env + config file."""
+    """pgimcode settings, sourced from env + config file + saved prefs."""
 
     model_config = SettingsConfigDict(
         env_prefix="PGIMCODE_",
@@ -42,6 +48,42 @@ class Settings(BaseSettings):
     api_provider: str = "openai"
     api_base_url: str | None = None
     deepseek_api_key: str | None = None
+
+    @model_validator(mode="after")
+    def _apply_saved_prefs(self) -> "Settings":
+        """Restore the last chosen model unless explicitly set via env/.env."""
+        if "model_name" in self.model_fields_set:
+            return self
+        try:
+            prefs = json.loads(_prefs_path().read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return self
+        if isinstance(prefs, dict) and prefs.get("model_name"):
+            self.model_name = prefs["model_name"]
+            if prefs.get("api_provider") and "api_provider" not in self.model_fields_set:
+                self.api_provider = prefs["api_provider"]
+            if "api_base_url" not in self.model_fields_set:
+                self.api_base_url = prefs.get("api_base_url")
+        return self
+
+    def save_model_choice(self) -> None:
+        """Persist the current model selection so future sessions reuse it."""
+        path = _prefs_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(
+                    {
+                        "model_name": self.model_name,
+                        "api_provider": self.api_provider,
+                        "api_base_url": self.api_base_url,
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
 
     def get_active_api_key(self) -> str | None:
         """Return any available API key, preferring the active provider."""

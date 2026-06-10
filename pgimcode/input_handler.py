@@ -161,8 +161,9 @@ class ModelSelector:
         settings: "Settings",
         model_id: str,
     ) -> None:
-        """Apply a model selection to settings in-place."""
+        """Apply a model selection to settings in-place and persist it."""
         info = resolve_model_info(model_id)
         settings.model_name = model_id
         settings.api_provider = info.provider.value
         settings.api_base_url = info.api_base_url
+        settings.save_model_choice()
