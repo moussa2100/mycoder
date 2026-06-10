@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from langchain_openai import ChatOpenAI
-from deepagents import create_deep_agent
+from deepagents import CompiledSubAgent, create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend, StoreBackend
 from langgraph.store.memory import InMemoryStore
 
@@ -146,6 +146,30 @@ def create_orchestrator(settings: "Settings", workspace_root=None, store=None):
         create_planner_subagent(),
         create_verifier_subagent(),
     ]
+
+    # ------------------------------------------------------------------
+    # CompiledSubAgent (future use)
+    # ------------------------------------------------------------------
+    # For complex multi-step workflows (e.g., a research pipeline with
+    # conditional branching), use CompiledSubAgent with a pre-built graph:
+    #
+    #   from langchain.agents import create_agent
+    #
+    #   research_graph = create_agent(
+    #       model=model,
+    #       tools=[web_search, code_outline],
+    #       prompt="You research codebases...",
+    #       response_format=Findings,
+    #   )
+    #
+    #   research_subagent = CompiledSubAgent(
+    #       name="deep-researcher",
+    #       description="Multi-step codebase research with synthesis",
+    #       runnable=research_graph,
+    #   )
+    #
+    # Then add research_subagent to the subagents list above.
+    # CompiledSubAgent supports response_format via the pre-compiled runnable.
 
     # ------------------------------------------------------------------
     # Memory & Backend

@@ -2,6 +2,17 @@
 
 from __future__ import annotations
 
+from pydantic import BaseModel, Field
+
+
+class VerificationResult(BaseModel):
+    """Result of a code verification check."""
+
+    passed: bool = Field(description="Whether all checks passed")
+    issues: list[str] = Field(default_factory=list, description="List of issues found, if any")
+    summary: str = Field(description="Brief summary of the verification outcome")
+
+
 VERIFIER_PROMPT = """You are a **Code Verifier Agent**. Your job is to verify that changes are correct, complete, and don't introduce errors.
 
 ## Your Tools
@@ -38,7 +49,10 @@ Before each tool call, state in one short sentence what you are doing and why â€
 
 Use virtual absolute paths like `/frontend/index.html`. Never invent custom tool names like `list_files` or `verify_file`.
 
-Be thorough but concise. Focus on whether the changes are correct and complete."""
+## Output Format
+Return ONLY a concise summary of what you did. Keep it under 300 words.
+Do NOT include raw tool outputs, intermediate results, or verbose logs.
+The orchestrator only needs the key findings."""
 
 
 def create_verifier_subagent():
@@ -47,4 +61,5 @@ def create_verifier_subagent():
         "name": "verifier",
         "description": "Verifies that code changes are correct and complete. Use after making edits to confirm correctness.",
         "system_prompt": VERIFIER_PROMPT,
+        "response_format": VerificationResult,
     }

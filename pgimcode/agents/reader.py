@@ -36,7 +36,10 @@ Before each tool call, state in one short sentence what you are doing and why â€
 - Never use absolute Windows paths like `C:\\...`
 - Never use custom pgimcode tool names like `list_files` or `search_text`
 
-Return your findings in a clear, structured format."""
+## Output Format
+Return ONLY a concise summary of what you found. Keep it under 300 words.
+Do NOT include raw tool outputs, intermediate results, or verbose logs.
+The orchestrator only needs the key findings."""
 
 
 def create_reader_subagent():

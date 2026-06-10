@@ -2,6 +2,18 @@
 
 from __future__ import annotations
 
+from pydantic import BaseModel, Field
+
+
+class PlanStep(BaseModel):
+    """A single step in a task plan."""
+
+    step_number: int = Field(description="Sequential step number")
+    action: str = Field(description="What action to take (e.g., 'read', 'edit', 'execute')")
+    file: str | None = Field(default=None, description="Primary file affected by this step")
+    description: str = Field(description="Detailed description of what to do in this step")
+
+
 PLANNER_PROMPT = """You are a **Task Planner Agent**. Your job is to analyze the user's request and create a detailed, step-by-step plan.
 
 ## Your Tools (read-only for planning)
@@ -39,7 +51,10 @@ Before each tool call, state in one short sentence what you are doing and why â€
 6. Don't make any changes â€” just read and plan
 7. Use virtual absolute paths like `/frontend/index.html`
 
-Output a structured plan with numbered steps. Each step should be specific enough that another agent can execute it."""
+## Output Format
+Return ONLY a concise summary of what you did. Keep it under 300 words.
+Do NOT include raw tool outputs, intermediate results, or verbose logs.
+The orchestrator only needs the key findings."""
 
 
 def create_planner_subagent():
@@ -48,4 +63,5 @@ def create_planner_subagent():
         "name": "planner",
         "description": "Analyzes tasks and creates detailed step-by-step plans. Use for complex tasks that need careful planning.",
         "system_prompt": PLANNER_PROMPT,
+        "response_format": PlanStep,
     }

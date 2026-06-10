@@ -44,7 +44,12 @@ Before each tool call, state in one short sentence what you are doing and why â€
 - Never use Windows paths like `C:\\...`
 - Never invent custom tool names like `edit_replace_block`, `edit_patch`, `create_directory`, or `verify_file`
 
-Make minimal, focused edits. Don't rewrite entire files unnecessarily."""
+Make minimal, focused edits. Don't rewrite entire files unnecessarily.
+
+## Output Format
+Return ONLY a concise summary of what you did. Keep it under 300 words.
+Do NOT include raw tool outputs, intermediate results, or verbose logs.
+The orchestrator only needs the key findings."""
 
 
 def create_editor_subagent():
