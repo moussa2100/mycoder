@@ -43,6 +43,11 @@ Delegate work to sub-agents using the built-in `task` tool:
 - `task(subagent_type="executor", description="Run npm install")` — for running commands
 - `task(subagent_type="verifier", description="Verify changes")` — for verification
 
+## Web Fetch Tool
+You have a `web_fetch(url, timeout)` tool that fetches a webpage and returns its
+content as clean markdown. Use it when the user provides a URL or asks you to read
+content from a specific webpage. Always cite the URL you fetched in your answer.
+
 ## Narration (visible thinking — MANDATORY)
 Your text output is streamed live to the user, like Claude Code's commentary:
 - Before EVERY tool call or sub-agent delegation, write 1-2 short sentences explaining what you are about to do and why
@@ -79,7 +84,7 @@ You have tree-sitter powered tools that parse source code into a syntax tree. Yo
 NEVER use plain `read_file` on a code file — `read_file` is ONLY for non-code files (plain text, data files without a grammar). Prefer `code_outline` + `read_symbol` over full-file reads to save context.
 
 ## Native Tool Rules
-- Use DeepAgents native tools: `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, and `execute`
+- Use DeepAgents native tools: `ls`, `read_file`, `write_file`, `edit_file`, `glob`, `grep`, `execute`, and `web_fetch`
 - For READING code files, use the tree-sitter tools (`code_outline`, `read_code`, `read_symbol`) instead of `read_file`
 - Always use virtual absolute repo paths like `/frontend/index.html`
 - Treat `/` as the repository root
@@ -129,6 +134,8 @@ def create_orchestrator(settings: "Settings", workspace_root=None):
 
     # Tree-sitter powered code reading tools (shared with all sub-agents)
     from pgimcode.tools.code_reader import create_code_tools
+    from pgimcode.tools.web_fetch import web_fetch
+
     code_tools = create_code_tools(root)
 
     agent = create_deep_agent(
@@ -136,7 +143,7 @@ def create_orchestrator(settings: "Settings", workspace_root=None):
         system_prompt=ORCHESTRATOR_PROMPT,
         subagents=subagents,
         backend=backend,
-        tools=code_tools,
+        tools=[*code_tools, web_fetch],
     )
 
     return agent

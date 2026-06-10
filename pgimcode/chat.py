@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import time
 from typing import TYPE_CHECKING
 
+from prompt_toolkit import PromptSession
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -18,6 +20,45 @@ from pgimcode.events import Event, EventBus, EventType
 
 if TYPE_CHECKING:
     from pgimcode.approval import ApprovalGate
+
+
+def _drain_pending_input(grace_seconds: float = 0.08) -> str:
+    """Collect terminal input that is already buffered (the rest of a multiline paste).
+
+    Terminals without bracketed-paste support deliver a paste as plain
+    keystrokes: the first newline submits the prompt and the remaining lines
+    stay in the console buffer. This drains them so the whole paste becomes
+    ONE message instead of the first line only.
+    """
+    try:
+        import msvcrt
+    except ImportError:
+        return _drain_pending_input_posix(grace_seconds)
+    chars: list[str] = []
+    deadline = time.monotonic() + grace_seconds
+    while time.monotonic() < deadline:
+        while msvcrt.kbhit():
+            chars.append(msvcrt.getwch())
+            deadline = time.monotonic() + grace_seconds
+        time.sleep(0.005)
+    return "".join(chars).replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _drain_pending_input_posix(grace_seconds: float) -> str:
+    import os
+    import select
+
+    chunks: list[bytes] = []
+    fd = sys.stdin.fileno()
+    while True:
+        ready, _, _ = select.select([fd], [], [], grace_seconds)
+        if not ready:
+            break
+        data = os.read(fd, 65536)
+        if not data:
+            break
+        chunks.append(data)
+    return b"".join(chunks).decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n").strip()
 
 
 class ChatRenderer:
@@ -65,11 +106,9 @@ class ChatRenderer:
         )
 
     def start_turn(self, task: str) -> None:
-        """Print the user's task/prompt at the start of a turn."""
+        """Mark the start of a turn (the prompt line already shows the user's text)."""
         self._turn_start = time.time()
         self._printed_texts.clear()
-        self._console.print()
-        self._console.print(f"  [bold bright_white]> {task}[/]")
         self._console.print()
 
     def add_event(self, event: Event) -> None:
@@ -395,23 +434,43 @@ class ChatSession:
 
         self._running = True
 
+        # prompt_toolkit session: bracketed paste keeps a multiline paste in
+        # ONE buffer (only a real Enter submits), plus up-arrow input history.
+        # Falls back to a plain prompt when stdin is not a terminal (pipes).
+        is_tty = sys.stdin.isatty()
+        prompt_session: PromptSession | None = PromptSession() if is_tty else None
+
         while self._running:
             try:
-                line = self._console.input("  [bold bright_white]>[/] ").strip()
+                if prompt_session is not None:
+                    raw = await prompt_session.prompt_async([("bold", "  > ")])
+                else:
+                    raw = self._console.input("  [bold bright_white]>[/] ")
             except (EOFError, KeyboardInterrupt):
                 break
 
+            # Fallback for terminals without bracketed paste: a paste's first
+            # newline submits the prompt and the rest stays buffered — drain
+            # it and echo the extra lines so the full message is visible.
+            extra = _drain_pending_input() if is_tty else ""
+            if extra:
+                for cont in extra.splitlines():
+                    self._console.print(f"  [bold bright_white]>[/] {cont}")
+                raw = f"{raw}\n{extra}"
+
+            line = raw.strip()
             if not line:
                 continue
 
-            # Handle slash commands
-            if line.startswith("/"):
+            # Handle slash commands (single-line input only)
+            if line.startswith("/") and "\n" not in line:
                 await self._handle_slash_command(line.lower(), renderer, store, bus)
                 continue
 
             # Process the task
             renderer.start_turn(line)
 
+            success = False
             try:
                 success = await self._process_task(line, bus, renderer)
                 self._history.append((line, success))

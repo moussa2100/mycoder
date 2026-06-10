@@ -31,6 +31,7 @@ _EXPORTS = {
     "diff_preview": ("pgimcode.tools.diff", "diff_preview"),
     "Snapshot": ("pgimcode.tools.snapshot", "Snapshot"),
     "SnapshotManager": ("pgimcode.tools.snapshot", "SnapshotManager"),
+    "web_fetch": ("pgimcode.tools.web_fetch", "web_fetch"),
 }
 
 
@@ -75,4 +76,6 @@ __all__ = [
     # snapshot
     "Snapshot",
     "SnapshotManager",
+    # web
+    "web_fetch",
 ]
