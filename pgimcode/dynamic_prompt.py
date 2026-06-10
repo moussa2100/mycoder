@@ -17,10 +17,11 @@ Usage:
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-from langchain.agents.middleware import AgentMiddleware
-from langchain.agents.middleware.base import AgentRequest, AgentResponse
+from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
+from langchain_core.messages import AIMessage, SystemMessage
 
 
 class DynamicPromptMiddleware(AgentMiddleware):
@@ -38,15 +39,15 @@ class DynamicPromptMiddleware(AgentMiddleware):
         """Initialize the dynamic prompt middleware."""
         super().__init__()
 
-    async def before_model(self, request: AgentRequest) -> AgentRequest:
-        """Inject context-aware instructions before the model is called.
+    def _build_system_prompt(self, request: ModelRequest) -> str | None:
+        """Build an augmented system prompt for the current runtime context.
 
         Reads the runtime context and appends a dynamic prompt section
         to the system prompt.
         """
         ctx = getattr(request.runtime, "context", None)
         if ctx is None:
-            return request
+            return request.system_prompt
 
         # Build dynamic prompt sections from context
         sections: list[str] = []
@@ -116,19 +117,34 @@ class DynamicPromptMiddleware(AgentMiddleware):
             )
 
         if not sections:
-            return request
+            return request.system_prompt
 
         dynamic_prompt = "\n\n".join(sections)
 
         # Append to the system prompt
-        existing_prompt = getattr(request, "system_prompt", "") or ""
+        existing_prompt = request.system_prompt or ""
         if existing_prompt:
-            request.system_prompt = f"{existing_prompt}\n\n{dynamic_prompt}"
-        else:
-            request.system_prompt = dynamic_prompt
+            return f"{existing_prompt}\n\n{dynamic_prompt}"
+        return dynamic_prompt
 
-        return request
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse[Any]],
+    ) -> ModelResponse[Any] | AIMessage:
+        """Inject context-aware instructions for synchronous model execution."""
+        prompt = self._build_system_prompt(request)
+        if prompt:
+            request = request.override(system_message=SystemMessage(content=prompt))
+        return handler(request)
 
-    async def after_model(self, request: AgentRequest, response: AgentResponse) -> AgentResponse:
-        """Pass through — no post-model processing needed."""
-        return response
+    async def awrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], Awaitable[ModelResponse[Any]]],
+    ) -> ModelResponse[Any] | AIMessage:
+        """Inject context-aware instructions for asynchronous model execution."""
+        prompt = self._build_system_prompt(request)
+        if prompt:
+            request = request.override(system_message=SystemMessage(content=prompt))
+        return await handler(request)

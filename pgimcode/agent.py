@@ -166,17 +166,16 @@ class RealAgent:
 
         from langchain_core._api import LangChainBetaWarning
 
-        kwargs = dict(initial, config=config, version="v3")
-        if context is not None:
-            kwargs["context"] = context
-
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore",
                 message="The v3 streaming protocol on Pregel is experimental.*",
                 category=LangChainBetaWarning,
             )
-            return await agent.astream_events(**kwargs)
+            kwargs = {"version": "v3"}
+            if context is not None:
+                kwargs["context"] = context
+            return await agent.astream_events(initial, config=config, **kwargs)
 
     def _message_text(self, msg) -> str:
         """Extract plain text from a message's content (str or content-block list)."""
