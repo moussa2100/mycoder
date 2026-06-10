@@ -1,0 +1,6 @@
+{
+  "content": "# pgimcode Change Log\n\n## [Unreleased]\n\n### Added\n- `memory/` package with PersistentFileStore (file-based BaseStore implementation)\n- Long-term memory integration: agent loads AGENTS.md and CHANGES.md at startup\n- Agent can read and update its own memory files across sessions\n- `.pgim_memory/` directory stored at project root for persistence\n",
+  "encoding": "utf-8",
+  "created_at": "2026-06-10T04:15:42.670359+00:00",
+  "modified_at": "2026-06-10T04:15:42.670359+00:00"
+}

@@ -46,6 +46,8 @@ class RealAgent:
     async def run(self) -> None:
         """Run the deepagents orchestrator and surface failures as events."""
         from pgimcode.agents.orchestrator import create_orchestrator
+        from pgimcode.memory.store import PersistentFileStore
+        from pathlib import Path
 
         try:
             await self._bus.publish(Event(
@@ -57,7 +59,15 @@ class RealAgent:
                 details=f"Starting task: {self._task}",
             ))
 
-            agent = create_orchestrator(self._settings, workspace_root=self._workspace_root)
+            # Create persistent long-term memory store
+            memory_dir = self._workspace_root / ".pgim_memory"
+            memory_store = PersistentFileStore(root_dir=memory_dir)
+
+            agent = create_orchestrator(
+                self._settings,
+                workspace_root=self._workspace_root,
+                store=memory_store,
+            )
             initial = {"messages": [{"role": "user", "content": self._build_task_input()}]}
             config = {"configurable": {"thread_id": self._session_id}}
 

@@ -17,6 +17,7 @@ from rich.syntax import Syntax
 
 from pgimcode.config import Settings
 from pgimcode.events import Event, EventBus, EventType
+from pgimcode.memory.store import PersistentFileStore
 
 if TYPE_CHECKING:
     from pgimcode.approval import ApprovalGate

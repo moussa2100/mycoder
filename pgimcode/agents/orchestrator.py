@@ -6,7 +6,8 @@ from typing import TYPE_CHECKING
 
 from langchain_openai import ChatOpenAI
 from deepagents import create_deep_agent
-from deepagents.backends import LocalShellBackend
+from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend, StoreBackend
+from langgraph.store.memory import InMemoryStore
 
 from pgimcode.agents.reader import create_reader_subagent
 from pgimcode.agents.editor import create_editor_subagent
@@ -73,6 +74,19 @@ You write and review code the way an expert software developer does. Apply these
 5. **Complete the full task** — Don't stop halfway through
 6. **Report clearly** — Summarize what was done when the task is complete
 
+## Long-Term Memory
+You have persistent long-term memory stored in markdown files. This memory persists across all sessions:
+- **`/memories/AGENTS.md`** — Architecture, design patterns, libraries, and project conventions. Check this at the start of each task to understand the codebase. UPDATE this file when you discover important architectural decisions, new patterns, or learn something about the project that future sessions should know.
+- **`/memories/CHANGES.md`** — Change log of significant modifications. Add entries here when you make meaningful changes to the codebase.
+
+These files are loaded into your context automatically. You can read and edit them using your normal file tools (`read_file`, `edit_file`). Whenever you learn something important about the project's architecture, discovered patterns, or available libraries, update `/memories/AGENTS.md` so future sessions benefit from your knowledge.
+
+## Memory Update Guidelines
+- **Update AGENTS.md** when you: discover a new design pattern, add a library, refactor a module, learn a codebase convention, or make any architecturally significant decision
+- **Update CHANGES.md** when you: add a feature, fix a significant bug, refactor code, or change project structure
+- **Read memory first** — at the start of every task, check AGENTS.md to benefit from past learnings
+- Be concise but informative — write clear markdown that another AI would find useful
+
 You have direct access to DeepAgents native tools as well. Use them when a quick read or write is faster than delegating to a sub-agent.
 
 ## Code Reading Rules (tree-sitter — MANDATORY)
@@ -92,8 +106,15 @@ NEVER use plain `read_file` on a code file — `read_file` is ONLY for non-code 
 - Never invent custom tool names like `edit_replace_block`, `list_files`, `search_text`, or `run_command`"""
 
 
-def create_orchestrator(settings: "Settings", workspace_root=None):
-    """Create the main orchestrator agent with all sub-agents and tools."""
+def create_orchestrator(settings: "Settings", workspace_root=None, store=None):
+    """Create the main orchestrator agent with all sub-agents, tools, and long-term memory.
+
+    Args:
+        settings: Application settings.
+        workspace_root: Absolute path to the workspace root.
+        store: A ``BaseStore`` instance for persistent long-term memory.
+               If None, falls back to ``InMemoryStore`` (no cross-session persistence).
+    """
     from pathlib import Path
     root = Path(workspace_root or ".").resolve()
 
@@ -126,11 +147,44 @@ def create_orchestrator(settings: "Settings", workspace_root=None):
         create_verifier_subagent(),
     ]
 
-    backend = LocalShellBackend(
+    # ------------------------------------------------------------------
+    # Memory & Backend
+    # ------------------------------------------------------------------
+    # Filesystem backend for normal file operations
+    fs_backend = LocalShellBackend(
         root_dir=root,
         virtual_mode=True,
         inherit_env=True,
     )
+
+    # Long-term memory backend — stores memory files as JSON in the store
+    # The namespace is user-scoped: each session/user gets their own copy.
+    # We use a simple static namespace since pgimcode is single-user.
+    _MEMORY_NAMESPACE = ("pgimcode", "default_user")
+
+    # Determine the backing store for persistent memory
+    if store is None:
+        store = InMemoryStore()
+
+    # Seed memory files on first run
+    from pgimcode.memory.seeds import seed_memory_store
+    seed_memory_store(store, _MEMORY_NAMESPACE)
+
+    store_backend = StoreBackend(
+        store=store,
+        namespace=lambda _rt: _MEMORY_NAMESPACE,
+    )
+
+    # Composite: filesystem for real work, store for memory files
+    backend = CompositeBackend(
+        default=fs_backend,
+        routes={
+            "/memories/": store_backend,
+        },
+    )
+
+    # Memory files loaded at agent startup
+    memory = ["/memories/AGENTS.md", "/memories/CHANGES.md"]
 
     # Tree-sitter powered code reading tools (shared with all sub-agents)
     from pgimcode.tools.code_reader import create_code_tools
@@ -143,6 +197,8 @@ def create_orchestrator(settings: "Settings", workspace_root=None):
         system_prompt=ORCHESTRATOR_PROMPT,
         subagents=subagents,
         backend=backend,
+        store=store,
+        memory=memory,
         tools=[*code_tools, web_fetch],
     )
 
