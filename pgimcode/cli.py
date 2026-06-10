@@ -123,7 +123,7 @@ def run(
     trace_export: str | None = typer.Option(None, "--trace-export", help="Export trace to JSONL file path"),
     failure_snapshot: bool = typer.Option(False, "--failure-snapshot", help="Write failure snapshot on FAILED events"),
     real: bool = typer.Option(False, "--real", help="Use real LLM agent instead of mock"),
-    model: str | None = typer.Option(None, "--model", "-M", help="Select AI model (e.g. deepseek-chat, gemini-3.5-flash). Use 'models' subcommand to list all."),
+    model: str | None = typer.Option(None, "--model", "-M", help="Select AI model (e.g. deepseek-v4-flash, gemini-3.5-flash). Use 'models' subcommand to list all."),
 ) -> None:
     """Run a coding task with the agent."""
     # Handle dry-run mode early

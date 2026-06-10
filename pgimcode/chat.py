@@ -334,6 +334,7 @@ class ChatRenderer:
         self._console.print()
         help_panel = Panel(
             "[bold cyan]/model[/]     Switch AI model\n"
+            "[bold cyan]/agent-model[/] Set per-agent model overrides\n"
             "[bold cyan]/skills[/]    List, view, or activate skills\n"
             "[bold cyan]/quit[/]      Exit chat session\n"
             "[bold cyan]/help[/]      Show this help\n"
@@ -430,6 +431,9 @@ class ChatSession:
             "/help",
             "/h",
             "/model",
+            "/agent-model",
+            "/agent-model list",
+            "/agent-model clear",
             "/quit",
             "/q",
             "/clear",
@@ -516,7 +520,7 @@ class ChatSession:
 
             # Handle slash commands (single-line input only)
             if line.startswith("/") and "\n" not in line:
-                await self._handle_slash_command(line.lower(), renderer, store, bus)
+                await self._handle_slash_command(line, renderer, store, bus)
                 continue
 
             # Process the task
@@ -570,6 +574,24 @@ class ChatSession:
                     details=f"Switched to: {new_model_id}",
                 ))
 
+        elif cmd == "/agent-model":
+            from pgimcode.input_handler import ModelSelector
+            selection = ModelSelector.render_agent_model_selection(
+                self._console, self._settings
+            )
+            if selection:
+                agent_name, model_id = selection
+                ModelSelector.apply_agent_model_selection(
+                    self._settings, agent_name, model_id
+                )
+                effective = model_id or self._settings.model_name
+                self._console.print(
+                    f"  [bold cyan]MODEL[/] {agent_name} agent -> {effective}"
+                )
+
+        elif cmd.startswith("/agent-model "):
+            await self._handle_agent_model_command(line, renderer)
+
         elif cmd == "/sessions":
             from rich.table import Table
             table = Table(title="Sessions")
@@ -592,6 +614,52 @@ class ChatSession:
 
         else:
             self._console.print(f"  [dim]Unknown command: {line}. Type /help for commands.[/]")
+
+    async def _handle_agent_model_command(
+        self,
+        line: str,
+        renderer: ChatRenderer,
+    ) -> None:
+        """Handle /agent-model list|clear <agent>|<agent> <model>."""
+        from pgimcode.input_handler import ModelSelector
+
+        parts = line.strip().split()
+        action = parts[1].lower() if len(parts) > 1 else "list"
+
+        if action in {"list", "show"}:
+            ModelSelector.render_agent_models(self._console, self._settings)
+            return
+
+        try:
+            if action == "clear" and len(parts) == 3:
+                agent_name = parts[2].lower()
+                ModelSelector.apply_agent_model_selection(
+                    self._settings, agent_name, None
+                )
+                effective = self._settings.model_name
+                self._console.print(
+                    f"  [bold cyan]MODEL[/] {agent_name} agent -> {effective} (default)"
+                )
+                return
+
+            if len(parts) == 3:
+                agent_name = parts[1].lower()
+                model_id = parts[2].lower()
+                ModelSelector.apply_agent_model_selection(
+                    self._settings, agent_name, model_id
+                )
+                self._console.print(
+                    f"  [bold cyan]MODEL[/] {agent_name} agent -> {model_id}"
+                )
+                return
+        except ValueError as exc:
+            self._console.print(f"  [red]{exc}[/red]")
+            return
+
+        self._console.print(
+            "  [dim]Usage: /agent-model list | /agent-model <agent> <model> | "
+            "/agent-model clear <agent>[/]"
+        )
 
     async def _handle_skills_command(self, cmd: str, renderer: ChatRenderer) -> None:
         """Handle /skills subcommands: list, view <name>, use <name>, deactivate."""

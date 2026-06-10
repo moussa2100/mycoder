@@ -47,11 +47,18 @@ class RealAgent:
         self._conversation_history = conversation_history or []
         self._active_skills = active_skills or []
         self._workspace_root = self._resolve_root()
+        self._model_changed = False
+
+    def _on_model_switched(self, event: Event) -> None:
+        if event.type == EventType.MODEL_SWITCHED:
+            self._model_changed = True
 
     async def run(self) -> None:
         """Run the deepagents orchestrator and surface failures as events."""
         from pgimcode.agents.orchestrator import create_orchestrator
         from pgimcode.memory.store import PersistentFileStore
+
+        self._bus.subscribe(self._on_model_switched)
 
         try:
             await self._bus.publish(Event(
@@ -67,36 +74,47 @@ class RealAgent:
             memory_dir = self._workspace_root / ".pgim_memory"
             memory_store = PersistentFileStore(root_dir=memory_dir)
 
-            agent = create_orchestrator(
-                self._settings,
-                workspace_root=self._workspace_root,
-                store=memory_store,
-            )
+            while True:
+                agent = create_orchestrator(
+                    self._settings,
+                    workspace_root=self._workspace_root,
+                    store=memory_store,
+                )
 
-            # Build runtime context for this invocation
-            ctx = AgentContext(
-                mode=self._mode,
-                workspace_root=str(self._workspace_root),
-                session_id=self._session_id,
-                recent_files=list(self._recent_files),
-                conversation_history=list(self._conversation_history),
-                active_skills=list(self._active_skills),
-                preferences={"verbose": True},
-            )
+                # Build runtime context for this invocation
+                ctx = AgentContext(
+                    mode=self._mode,
+                    workspace_root=str(self._workspace_root),
+                    session_id=self._session_id,
+                    recent_files=list(self._recent_files),
+                    conversation_history=list(self._conversation_history),
+                    active_skills=list(self._active_skills),
+                    preferences={"verbose": True},
+                )
 
-            initial = {
-                "messages": [{"role": "user", "content": self._build_task_input()}],
-                "recent_files": list(self._recent_files),
-                "conversation_history": list(self._conversation_history),
-                "session_mode": self._mode,
-                "current_task": self._task,
-            }
-            config = {"configurable": {"thread_id": self._session_id}}
+                initial = {
+                    "messages": [{"role": "user", "content": self._build_task_input()}],
+                    "recent_files": list(self._recent_files),
+                    "conversation_history": list(self._conversation_history),
+                    "session_mode": self._mode,
+                    "current_task": self._task,
+                }
+                config = {"configurable": {"thread_id": self._session_id}}
 
-            if self.renderer and hasattr(self.renderer, "on_assistant_token"):
-                await self._run_streaming(agent, initial, config, context=ctx)
-            else:
-                await self._run_updates_only(agent, initial, config, context=ctx)
+                if self.renderer and hasattr(self.renderer, "on_assistant_token"):
+                    await self._run_streaming(agent, initial, config, context=ctx)
+                else:
+                    await self._run_updates_only(agent, initial, config, context=ctx)
+
+                # Update conversation history
+                state = agent.get_state(config)
+                self._conversation_history = state.values.get("conversation_history", self._conversation_history)
+
+                if not self._model_changed:
+                    break
+                
+                self._model_changed = False
+                # Continue loop to re-create agent
 
             await self._bus.publish(Event(
                 id=_new_ulid(),
@@ -162,7 +180,16 @@ class RealAgent:
         stream = await self._open_v3_event_stream(agent, initial, config, context=context)
 
         # Consume the stream through the adapter (publishes events to the bus)
-        await adapter.consume(stream)
+        consume_task = asyncio.create_task(adapter.consume(stream))
+        while not consume_task.done():
+            if self._model_changed:
+                consume_task.cancel()
+                break
+            await asyncio.sleep(0.1)
+        try:
+            await consume_task
+        except asyncio.CancelledError:
+            pass
 
     async def _open_v3_event_stream(self, agent, initial, config, context=None):
         """Open LangGraph's async v3 stream without leaking beta warnings to CLI."""
@@ -297,7 +324,17 @@ class RealAgent:
         adapter = EventStreamAdapter(bus=self._bus, session_id=self._session_id)
 
         stream = await self._open_v3_event_stream(agent, initial, config, context=context)
-        await adapter.consume(stream)
+        
+        consume_task = asyncio.create_task(adapter.consume(stream))
+        while not consume_task.done():
+            if self._model_changed:
+                consume_task.cancel()
+                break
+            await asyncio.sleep(0.1)
+        try:
+            await consume_task
+        except asyncio.CancelledError:
+            pass
 
     def _parse_deepagents_event(self, node_name: str, update: dict) -> str | None:
         """Parse a deepagents streaming event into a human-readable string."""

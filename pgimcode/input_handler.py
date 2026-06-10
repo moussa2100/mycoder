@@ -12,6 +12,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from pgimcode.config import AGENT_MODEL_FIELDS
 from pgimcode.models import (
     AVAILABLE_MODELS,
     ModelProvider,
@@ -166,4 +167,89 @@ class ModelSelector:
         settings.model_name = model_id
         settings.api_provider = info.provider.value
         settings.api_base_url = info.api_base_url or None
+        settings.save_model_choice()
+
+    @staticmethod
+    def render_agent_models(console: Console, settings: "Settings") -> None:
+        """Display the current per-agent model overrides."""
+        table = Table(
+            title="[bold cyan]Agent Model Overrides[/]",
+            border_style="cyan",
+            show_lines=False,
+        )
+        table.add_column("Agent", style="bold")
+        table.add_column("Model", style="cyan")
+        table.add_column("Effective")
+
+        for agent_name, field_name in AGENT_MODEL_FIELDS.items():
+            override = getattr(settings, field_name)
+            effective = override or settings.model_name
+            table.add_row(agent_name, override or "[dim]default[/]", effective)
+
+        console.print(table)
+
+    @staticmethod
+    def render_agent_model_selection(
+        console: Console,
+        settings: "Settings",
+    ) -> tuple[str, str | None] | None:
+        """Interactively choose an agent and model override."""
+        console.print()
+        ModelSelector.render_agent_models(console, settings)
+        agents = list(AGENT_MODEL_FIELDS.keys())
+
+        console.print()
+        console.print("[dim]Choose agent number, or press Enter to cancel[/]")
+        for index, agent_name in enumerate(agents, 1):
+            console.print(f"  [cyan]{index}[/]. {agent_name}")
+
+        try:
+            agent_choice = console.input("[bold]Agent #:[/] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if not agent_choice:
+            return None
+
+        try:
+            agent_name = agents[int(agent_choice) - 1]
+        except (ValueError, IndexError):
+            return None
+
+        console.print("[dim]Choose model number, or 0 to use session default[/]")
+        models = list(AVAILABLE_MODELS.values())
+        for index, model in enumerate(models, 1):
+            console.print(f"  [cyan]{index}[/]. {model.id} ({model.provider.value})")
+
+        try:
+            model_choice = console.input("[bold]Model #:[/] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if not model_choice:
+            return None
+        if model_choice == "0":
+            return agent_name, None
+
+        try:
+            model_id = models[int(model_choice) - 1].id
+        except (ValueError, IndexError):
+            return None
+
+        return agent_name, model_id
+
+    @staticmethod
+    def apply_agent_model_selection(
+        settings: "Settings",
+        agent_name: str,
+        model_id: str | None,
+    ) -> None:
+        """Apply a model override for one sub-agent and persist it."""
+        normalized_agent = agent_name.lower().strip()
+        if normalized_agent not in AGENT_MODEL_FIELDS:
+            valid = ", ".join(AGENT_MODEL_FIELDS)
+            raise ValueError(f"Unknown agent '{agent_name}'. Available: {valid}")
+
+        if model_id:
+            resolve_model_info(model_id)
+
+        setattr(settings, AGENT_MODEL_FIELDS[normalized_agent], model_id)
         settings.save_model_choice()

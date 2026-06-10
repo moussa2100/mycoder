@@ -23,23 +23,86 @@ class ModelInfo:
 
 
 AVAILABLE_MODELS: dict[str, ModelInfo] = {
-    "deepseek-chat": ModelInfo(
-        id="deepseek-chat",
-        name="DeepSeek Chat (v3)",
+    "deepseek-v4-flash": ModelInfo(
+        id="deepseek-v4-flash",
+        name="DeepSeek V4 Flash",
         provider=ModelProvider.DEEPSEEK,
-        context_window=128000,
-        description="DeepSeek flagship chat model. Strong coding performance.",
+        context_window=1_000_000,
+        description="Official DeepSeek V4 Flash endpoint. Fast, low-cost, supports tools and thinking mode.",
         api_base_url="https://api.deepseek.com/v1",
-        pricing_note="$0.27/$1.10 per 1M tokens",
+        pricing_note="$0.14/$0.28 per 1M tokens; cache hit $0.0028 in",
     ),
-    "deepseek-reasoner": ModelInfo(
-        id="deepseek-reasoner",
-        name="DeepSeek Reasoner (r1)",
+    "deepseek-v4-pro": ModelInfo(
+        id="deepseek-v4-pro",
+        name="DeepSeek V4 Pro",
         provider=ModelProvider.DEEPSEEK,
-        context_window=64000,
-        description="DeepSeek reasoning model. Chain-of-thought for complex tasks.",
+        context_window=1_000_000,
+        description="Official DeepSeek V4 Pro endpoint. Higher quality V4 tier for coding and reasoning.",
         api_base_url="https://api.deepseek.com/v1",
-        pricing_note="$0.55/$2.19 per 1M tokens",
+        pricing_note="$0.435/$0.87 per 1M tokens; cache hit $0.003625 in",
+    ),
+    "deepseek-coder-v2": ModelInfo(
+        id="deepseek-coder-v2",
+        name="DeepSeek Coder V2",
+        provider=ModelProvider.DEEPSEEK,
+        context_window=128_000,
+        description="DeepSeek Coder V2 model ID requested by the user. May require an endpoint that exposes legacy coder IDs.",
+        api_base_url="https://api.deepseek.com/v1",
+        pricing_note="$0.14/$0.28 per 1M tokens; unofficial/legacy",
+    ),
+    "deepseek-v3": ModelInfo(
+        id="deepseek-v3",
+        name="DeepSeek V3",
+        provider=ModelProvider.DEEPSEEK,
+        context_window=128_000,
+        description="DeepSeek V3 model ID requested by the user. May require an endpoint that still exposes V3.",
+        api_base_url="https://api.deepseek.com/v1",
+        pricing_note="$0.27/$1.10 per 1M tokens; legacy estimate",
+    ),
+    "deepseek-v3.5": ModelInfo(
+        id="deepseek-v3.5",
+        name="DeepSeek V3.5",
+        provider=ModelProvider.DEEPSEEK,
+        context_window=128_000,
+        description="DeepSeek V3.5 model ID requested by the user. Pricing is not listed in current official DeepSeek docs.",
+        api_base_url="https://api.deepseek.com/v1",
+        pricing_note="Not published by official DeepSeek pricing",
+    ),
+    "deepseek-v4": ModelInfo(
+        id="deepseek-v4",
+        name="DeepSeek V4",
+        provider=ModelProvider.DEEPSEEK,
+        context_window=1_000_000,
+        description="Generic DeepSeek V4 model ID requested by the user. Current official endpoint lists v4-flash/v4-pro instead.",
+        api_base_url="https://api.deepseek.com/v1",
+        pricing_note="$0.50/$1.50 per 1M tokens; third-party estimate",
+    ),
+    "deepseek-r1": ModelInfo(
+        id="deepseek-r1",
+        name="DeepSeek R1",
+        provider=ModelProvider.DEEPSEEK,
+        context_window=128_000,
+        description="DeepSeek R1 reasoning model ID requested by the user. May require an endpoint that still exposes R1.",
+        api_base_url="https://api.deepseek.com/v1",
+        pricing_note="$0.55/$2.19 per 1M tokens; legacy reasoning",
+    ),
+    "deepseek-r2": ModelInfo(
+        id="deepseek-r2",
+        name="DeepSeek R2",
+        provider=ModelProvider.DEEPSEEK,
+        context_window=128_000,
+        description="DeepSeek R2 reasoning model ID requested by the user. Pricing is not listed in current official DeepSeek docs.",
+        api_base_url="https://api.deepseek.com/v1",
+        pricing_note="Not published by official DeepSeek pricing",
+    ),
+    "deepseek-r3": ModelInfo(
+        id="deepseek-r3",
+        name="DeepSeek R3",
+        provider=ModelProvider.DEEPSEEK,
+        context_window=128_000,
+        description="DeepSeek R3 reasoning model ID requested by the user. Pricing is not listed in current official DeepSeek docs.",
+        api_base_url="https://api.deepseek.com/v1",
+        pricing_note="Not published by official DeepSeek pricing",
     ),
     # Gemini models (Google AI via native Gemini API)
     "gemini-3.5-flash": ModelInfo(
@@ -105,7 +168,7 @@ def resolve_model_info(model_id: str) -> ModelInfo:
 def get_default_model_for_provider(provider: ModelProvider) -> str:
     """Return the default model ID for a given provider."""
     defaults = {
-        ModelProvider.DEEPSEEK: "deepseek-chat",
+        ModelProvider.DEEPSEEK: "deepseek-v4-flash",
         ModelProvider.GEMINI: "gemini-3.5-flash",
     }
-    return defaults.get(provider, "deepseek-chat")
+    return defaults.get(provider, "deepseek-v4-flash")

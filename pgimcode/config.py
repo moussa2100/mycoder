@@ -13,6 +13,15 @@ def _prefs_path() -> Path:
     return Path(user_config_dir("pgimcode")) / "prefs.json"
 
 
+AGENT_MODEL_FIELDS: dict[str, str] = {
+    "reader": "reader_model_name",
+    "editor": "editor_model_name",
+    "executor": "executor_model_name",
+    "planner": "planner_model_name",
+    "verifier": "verifier_model_name",
+}
+
+
 class Settings(BaseSettings):
     """pgimcode settings, sourced from env + config file + saved prefs."""
 
@@ -42,6 +51,11 @@ class Settings(BaseSettings):
 
     # LLM settings
     model_name: str = "gemini-3.5-flash"
+    reader_model_name: str | None = None
+    editor_model_name: str | None = None
+    executor_model_name: str | None = None
+    planner_model_name: str | None = None
+    verifier_model_name: str | None = None
     llm_max_turns: int = 50
     llm_temperature: float = 0.2
     api_provider: str = "gemini"
@@ -66,6 +80,9 @@ class Settings(BaseSettings):
                 self.api_provider = prefs["api_provider"]
             if "api_base_url" not in self.model_fields_set:
                 self.api_base_url = prefs.get("api_base_url")
+            for field_name in AGENT_MODEL_FIELDS.values():
+                if field_name not in self.model_fields_set and field_name in prefs:
+                    setattr(self, field_name, prefs.get(field_name))
         self._normalize_model_choice()
         return self
 
@@ -82,6 +99,7 @@ class Settings(BaseSettings):
             self.api_provider = info.provider.value
             if not info.api_base_url:
                 self.api_base_url = None
+            self._normalize_agent_model_choices()
             return
 
         try:
@@ -93,6 +111,16 @@ class Settings(BaseSettings):
         self.api_provider = provider.value
         fallback = AVAILABLE_MODELS.get(self.model_name)
         self.api_base_url = fallback.api_base_url or None if fallback else None
+        self._normalize_agent_model_choices()
+
+    def _normalize_agent_model_choices(self) -> None:
+        """Clear stale per-agent model IDs instead of failing agent creation later."""
+        from pgimcode.models import AVAILABLE_MODELS
+
+        for field_name in AGENT_MODEL_FIELDS.values():
+            value = getattr(self, field_name)
+            if value and value not in AVAILABLE_MODELS:
+                setattr(self, field_name, None)
 
     def save_model_choice(self) -> None:
         """Persist the current model selection so future sessions reuse it."""
@@ -105,6 +133,10 @@ class Settings(BaseSettings):
                         "model_name": self.model_name,
                         "api_provider": self.api_provider,
                         "api_base_url": self.api_base_url,
+                        **{
+                            field_name: getattr(self, field_name)
+                            for field_name in AGENT_MODEL_FIELDS.values()
+                        },
                     },
                     indent=2,
                 ),

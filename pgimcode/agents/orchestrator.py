@@ -11,11 +11,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langgraph.store.memory import InMemoryStore
 
-from pgimcode.agents.reader import create_reader_subagent
-from pgimcode.agents.editor import create_editor_subagent
-from pgimcode.agents.executor import create_executor_subagent
-from pgimcode.agents.planner import create_planner_subagent
-from pgimcode.agents.verifier import create_verifier_subagent
+from pgimcode.config import AGENT_MODEL_FIELDS
 from pgimcode.context_schema import AgentContext
 from pgimcode.dynamic_prompt import DynamicPromptMiddleware
 from pgimcode.state_schema import PgimcodeState
@@ -149,6 +145,64 @@ Your solution should be:
 ## Recovering from Difficulties
 If you find yourself going in circles (repeated failures, same errors, no progress), stop and ask the user for help. Don't keep retrying the same approach."""
 
+from pgimcode.agents.reader import READER_PROMPT
+from pgimcode.agents.editor import EDITOR_PROMPT
+from pgimcode.agents.executor import EXECUTOR_PROMPT
+from pgimcode.agents.planner import PLANNER_PROMPT, PlanStep
+from pgimcode.agents.verifier import VERIFIER_PROMPT, VerificationResult
+
+
+def _resolve_agent_model_names(settings: "Settings") -> dict[str, str]:
+    """Return the effective model for each sub-agent."""
+    return {
+        agent_name: getattr(settings, field_name) or settings.model_name
+        for agent_name, field_name in AGENT_MODEL_FIELDS.items()
+    }
+
+
+def _build_model(settings: "Settings", model_name: str):
+    from pgimcode.models import AVAILABLE_MODELS, ModelProvider
+    
+    info = AVAILABLE_MODELS.get(model_name)
+    provider = info.provider if info else ModelProvider.GEMINI
+    
+    if provider == ModelProvider.DEEPSEEK:
+        llm_kwargs = dict(model=model_name, temperature=settings.llm_temperature)
+        if settings.deepseek_api_key:
+            llm_kwargs["api_key"] = settings.deepseek_api_key
+        llm_kwargs["base_url"] = (
+            info.api_base_url if info and info.api_base_url else settings.api_base_url
+        ) or "https://api.deepseek.com/v1"
+        return ChatOpenAI(**llm_kwargs)
+    else:
+        # Use the native Gemini integration. The OpenAI-compatible Gemini endpoint
+        # does not preserve Gemini thought signatures during tool-call turns, which
+        # can fail with: "Function call is missing a thought_signature".
+        llm_kwargs = dict(model=model_name, temperature=settings.llm_temperature)
+        if settings.gemini_api_key:
+            llm_kwargs["api_key"] = settings.gemini_api_key
+        if model_name.startswith("gemini-3"):
+            llm_kwargs["thinking_level"] = "low"
+        elif model_name.startswith("gemini-2.5"):
+            # Disable 2.5 thinking where supported; this avoids tool-call replay
+            # issues and keeps CLI latency/cost predictable.
+            llm_kwargs["thinking_budget"] = 0
+        return ChatGoogleGenerativeAI(**llm_kwargs)
+
+
+def _create_subagent(settings, model_name, system_prompt, name, description, **kwargs):
+    model = _build_model(settings, model_name or settings.model_name)
+    runnable = create_deep_agent(
+        model=model,
+        system_prompt=system_prompt,
+        **kwargs
+    )
+    return CompiledSubAgent(
+        name=name,
+        description=description,
+        runnable=runnable,
+    )
+
 
 def create_orchestrator(settings: "Settings", workspace_root=None, store=None):
     """Create the main orchestrator agent with all sub-agents, tools, and long-term memory.
@@ -163,84 +217,21 @@ def create_orchestrator(settings: "Settings", workspace_root=None, store=None):
     root = Path(workspace_root or ".").resolve()
 
     # Resolve provider and build the LLM
-    provider = settings.resolve_provider()
+    model = _build_model(settings, settings.model_name)
 
-    if provider == "deepseek":
-        model_name = settings.model_name if settings.model_name.startswith("deepseek") else "deepseek-chat"
-        llm_kwargs = dict(model=model_name, temperature=settings.llm_temperature)
-        if settings.deepseek_api_key:
-            llm_kwargs["api_key"] = settings.deepseek_api_key
-        llm_kwargs["base_url"] = settings.api_base_url or "https://api.deepseek.com/v1"
-        model = ChatOpenAI(**llm_kwargs)
-    else:
-        # Use the native Gemini integration. The OpenAI-compatible Gemini endpoint
-        # does not preserve Gemini thought signatures during tool-call turns, which
-        # can fail with: "Function call is missing a thought_signature".
-        model_name = settings.model_name if settings.model_name.startswith("gemini") else "gemini-3.5-flash"
-        llm_kwargs = dict(model=model_name, temperature=settings.llm_temperature)
-        if settings.gemini_api_key:
-            llm_kwargs["api_key"] = settings.gemini_api_key
-        if model_name.startswith("gemini-3"):
-            llm_kwargs["thinking_level"] = "low"
-        elif model_name.startswith("gemini-2.5"):
-            # Disable 2.5 thinking where supported; this avoids tool-call replay
-            # issues and keeps CLI latency/cost predictable.
-            llm_kwargs["thinking_budget"] = 0
-        model = ChatGoogleGenerativeAI(**llm_kwargs)
-
-    # Build sub-agent configs
-    subagents = [
-        create_reader_subagent(),
-        create_editor_subagent(),
-        create_executor_subagent(),
-        create_planner_subagent(),
-        create_verifier_subagent(),
-    ]
-
-    # ------------------------------------------------------------------
-    # CompiledSubAgent (future use)
-    # ------------------------------------------------------------------
-    # For complex multi-step workflows (e.g., a research pipeline with
-    # conditional branching), use CompiledSubAgent with a pre-built graph:
-    #
-    #   from langchain.agents import create_agent
-    #
-    #   research_graph = create_agent(
-    #       model=model,
-    #       tools=[web_search, code_outline],
-    #       prompt="You research codebases...",
-    #       response_format=Findings,
-    #   )
-    #
-    #   research_subagent = CompiledSubAgent(
-    #       name="deep-researcher",
-    #       description="Multi-step codebase research with synthesis",
-    #       runnable=research_graph,
-    #   )
-    #
-    # Then add research_subagent to the subagents list above.
-    # CompiledSubAgent supports response_format via the pre-compiled runnable.
-
-    # ------------------------------------------------------------------
     # Memory & Backend
-    # ------------------------------------------------------------------
-    # Filesystem backend for normal file operations
+    # ... (rest of the function)
     fs_backend = LocalShellBackend(
         root_dir=root,
         virtual_mode=True,
         inherit_env=True,
     )
 
-    # Long-term memory backend — stores memory files as JSON in the store
-    # The namespace is user-scoped: each session/user gets their own copy.
-    # We use a simple static namespace since pgimcode is single-user.
     _MEMORY_NAMESPACE = ("pgimcode", "default_user")
 
-    # Determine the backing store for persistent memory
     if store is None:
         store = InMemoryStore()
 
-    # Seed memory files on first run
     from pgimcode.memory.seeds import seed_memory_store
     seed_memory_store(store, _MEMORY_NAMESPACE)
 
@@ -249,7 +240,6 @@ def create_orchestrator(settings: "Settings", workspace_root=None, store=None):
         namespace=lambda _rt: _MEMORY_NAMESPACE,
     )
 
-    # Composite: filesystem for real work, store for memory files
     backend = CompositeBackend(
         default=fs_backend,
         routes={
@@ -257,23 +247,38 @@ def create_orchestrator(settings: "Settings", workspace_root=None, store=None):
         },
     )
 
-    # Memory files loaded at agent startup
     memory = ["/memories/AGENTS.md", "/memories/CHANGES.md"]
-
-    # Skills for progressive disclosure
     skills = ["/skills/coding/", "/skills/workflow/"]
 
-    # Tree-sitter powered code reading tools (shared with all sub-agents)
     from pgimcode.tools.code_reader import create_code_tools
     from pgimcode.tools.web_fetch import web_fetch
 
     code_tools = create_code_tools(root)
-
-    # On-demand compaction tool — lets the agent compact its own context
-    # between tasks instead of waiting for the 85% threshold.
     compaction_middleware = create_summarization_tool_middleware(
         model, backend
     )
+
+    # Shared sub-agent args
+    subagent_args = dict(
+        backend=backend,
+        store=store,
+        memory=memory,
+        skills=skills,
+        tools=[*code_tools, web_fetch],
+        context_schema=AgentContext,
+        state_schema=PgimcodeState,
+        middleware=[DynamicPromptMiddleware(), compaction_middleware],
+    )
+
+    # Build sub-agents
+    agent_models = _resolve_agent_model_names(settings)
+    subagents = [
+        _create_subagent(settings, agent_models["reader"], READER_PROMPT, "reader", "Reads files, searches code, lists directories. Use for exploring the codebase and gathering information.", **subagent_args),
+        _create_subagent(settings, agent_models["editor"], EDITOR_PROMPT, "editor", "Creates files and edits code using DeepAgents native filesystem tools.", **subagent_args),
+        _create_subagent(settings, agent_models["executor"], EXECUTOR_PROMPT, "executor", "Runs shell commands and tests. Use for executing build commands, running test suites, and verifying changes.", **subagent_args),
+        _create_subagent(settings, agent_models["planner"], PLANNER_PROMPT, "planner", "Analyzes tasks and creates detailed step-by-step plans. Use for complex tasks that need careful planning.", response_format=PlanStep, **subagent_args),
+        _create_subagent(settings, agent_models["verifier"], VERIFIER_PROMPT, "verifier", "Verifies that code changes are correct and complete. Use after making edits to confirm correctness.", response_format=VerificationResult, **subagent_args),
+    ]
 
     agent = create_deep_agent(
         model=model,
