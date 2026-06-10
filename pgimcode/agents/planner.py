@@ -38,6 +38,19 @@ Before each tool call, state in one short sentence what you are doing and why �
 - Consider **algorithmic complexity** — when a step involves data processing, specify the expected Big-O and the best data structures/algorithms
 - **Anticipate bugs** — for each step, list the edge cases and risks (empty inputs, error paths, concurrency, large inputs) the implementer must handle
 - Always include a final **review/verification step** in the plan
+- **Python async rule of thumb** — when planning Python code, ensure the plan respects this table for async/sync decisions:
+
+  | Situation | Correct approach |
+  |---|---|
+  | Calling async from async | `await func()` |
+  | Calling many async tasks | `await asyncio.gather(...)` |
+  | Calling async from app startup/script | `asyncio.run(main())` |
+  | Calling blocking sync from async | `await asyncio.to_thread(func)` |
+  | Inside FastAPI/Jupyter/event loop | never use `asyncio.run()` |
+  | Sync function needs async work | redesign to async, or call at top-level boundary only |
+
+  The best long-term design is: pick one execution model per layer. Keep infrastructure clients async if your app is async, and avoid mixing sync/async deep inside service methods.
+- **Dependency management (Python Poetry projects)** — This project uses **Poetry** for dependency management. When planning Python code that introduces a new library import, include a step to check `pyproject.toml` and run `poetry add <package>` if the library is not already listed. Never plan manual edits to `pyproject.toml` for adding dependencies.
 
 ## Instructions
 1. Use `ls`, `glob`, `grep`, and the tree-sitter tools to understand the current state of the relevant files

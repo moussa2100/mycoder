@@ -141,22 +141,54 @@ class EventStreamAdapter:
         self._seen_subagents: set[str] = set()
 
     async def consume(self, stream) -> None:
-        """Iterate the v3 stream and publish events for each projection."""
-        import time
+        """Consume v3 stream projections concurrently and publish events.
 
+        LangGraph v3 streams are caller-driven: consuming any projection pumps
+        the graph. Projections therefore must be consumed concurrently; reading
+        ``messages`` to completion before ``tool_calls`` can starve other
+        channels and make the CLI look stuck after the first assistant message.
+        """
         from pgimcode.session import _new_ulid
 
-        # Consume coordinator messages (token-level streaming to renderer)
-        async for message in self._iter_channel(getattr(stream, "messages", None)):
+        tasks: list[asyncio.Task] = []
+        if getattr(stream, "messages", None) is not None:
+            tasks.append(asyncio.create_task(
+                self._consume_messages(getattr(stream, "messages"), _new_ulid)
+            ))
+        if getattr(stream, "subagents", None) is not None:
+            tasks.append(asyncio.create_task(
+                self._consume_subagents(getattr(stream, "subagents"), _new_ulid)
+            ))
+        if getattr(stream, "tool_calls", None) is not None:
+            tasks.append(asyncio.create_task(
+                self._consume_tool_calls(getattr(stream, "tool_calls"), _new_ulid)
+            ))
+
+        if not tasks:
+            return
+
+        try:
+            await asyncio.gather(*tasks)
+        except BaseException:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            abort = getattr(stream, "abort", None)
+            if abort is not None:
+                await abort()
+            raise
+
+    async def _consume_messages(self, channel, new_id) -> None:
+        """Consume coordinator message projections."""
+        async for message in self._iter_channel(channel):
             self._step += 1
             text = await self._message_text(message)
             if text:
-                # Token-level streaming to renderer
                 if self._renderer and hasattr(self._renderer, "on_assistant_token"):
                     self._renderer.on_assistant_token(text)
 
                 await self._bus.publish(Event(
-                    id=_new_ulid(),
+                    id=new_id(),
                     session_id=self._session_id,
                     type=EventType.COORDINATOR_MESSAGE,
                     step=self._step,
@@ -164,14 +196,21 @@ class EventStreamAdapter:
                     details=text[:500],
                 ))
 
-        # Consume subagent lifecycle
-        async for subagent in self._iter_channel(getattr(stream, "subagents", None)):
-            name = getattr(subagent, "name", "unknown")
+    async def _consume_subagents(self, channel, new_id) -> None:
+        """Consume subagent handles and their nested message/tool projections."""
+        child_tasks: list[asyncio.Task] = []
+
+        async for subagent in self._iter_channel(channel):
+            name = (
+                getattr(subagent, "name", None)
+                or getattr(subagent, "graph_name", None)
+                or "subagent"
+            )
             if name not in self._seen_subagents:
                 self._seen_subagents.add(name)
                 self._step += 1
                 await self._bus.publish(Event(
-                    id=_new_ulid(),
+                    id=new_id(),
                     session_id=self._session_id,
                     type=EventType.SUBAGENT_STARTED,
                     step=self._step,
@@ -180,121 +219,44 @@ class EventStreamAdapter:
                     data={"subagent_name": name},
                 ))
 
-            # Subagent messages
-            try:
-                async for msg in self._iter_channel(getattr(subagent, "messages", None)):
-                    self._step += 1
-                    text = await self._message_text(msg)
-                    if text:
-                        # Show subagent text in renderer
-                        if self._renderer and hasattr(self._renderer, "show_assistant_text"):
-                            self._renderer.show_assistant_text(f"[{name}] {text}")
-
-                        await self._bus.publish(Event(
-                            id=_new_ulid(),
-                            session_id=self._session_id,
-                            type=EventType.SUBAGENT_MESSAGE,
-                            step=self._step,
-                            status="in_progress",
-                            details=text[:500],
-                            data={"subagent_name": name},
-                        ))
-            except Exception:
-                pass
-
-            # Subagent tool calls
-            try:
-                async for tc in self._iter_channel(getattr(subagent, "tool_calls", None)):
-                    self._step += 1
-                    tool_name = getattr(tc, "tool_name", "?")
-                    tool_input = getattr(tc, "input", {})
-                    await self._bus.publish(Event(
-                        id=_new_ulid(),
-                        session_id=self._session_id,
-                        type=EventType.SUBAGENT_TOOL_CALL,
-                        step=self._step,
-                        status="in_progress",
-                        details=f"{tool_name}({str(tool_input)[:200]})",
-                        data={"subagent_name": name, "tool_name": tool_name},
-                    ))
-
-                    # Notify renderer
-                    if self._renderer and hasattr(self._renderer, "on_tool_call"):
-                        self._renderer.on_tool_call(tool_name, tool_input)
-
-                    # Tool output
-                    try:
-                        output = getattr(tc, "output", None)
-                        error = getattr(tc, "error", None)
-                        if output is not None:
-                            await self._bus.publish(Event(
-                                id=_new_ulid(),
-                                session_id=self._session_id,
-                                type=EventType.SUBAGENT_TOOL_RESULT,
-                                step=self._step,
-                                status="done",
-                                details=str(output)[:500],
-                                data={"subagent_name": name, "tool_name": tool_name},
-                            ))
-                            if self._renderer and hasattr(self._renderer, "on_tool_result"):
-                                self._renderer.on_tool_result(tool_name, str(output)[:500], success=True)
-                        elif error is not None:
-                            await self._bus.publish(Event(
-                                id=_new_ulid(),
-                                session_id=self._session_id,
-                                type=EventType.SUBAGENT_TOOL_RESULT,
-                                step=self._step,
-                                status="failed",
-                                details=str(error)[:500],
-                                data={"subagent_name": name, "tool_name": tool_name},
-                            ))
-                            if self._renderer and hasattr(self._renderer, "on_tool_result"):
-                                self._renderer.on_tool_result(tool_name, str(error)[:500], success=False)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-            # Subagent completion/failure
-            try:
-                _ = subagent.output
-                self._step += 1
-                await self._bus.publish(Event(
-                    id=_new_ulid(),
-                    session_id=self._session_id,
-                    type=EventType.SUBAGENT_COMPLETED,
-                    step=self._step,
-                    status="done",
-                    details=f"Subagent completed: {name}",
-                    data={"subagent_name": name},
-                ))
-            except Exception:
-                self._step += 1
-                await self._bus.publish(Event(
-                    id=_new_ulid(),
-                    session_id=self._session_id,
-                    type=EventType.SUBAGENT_FAILED,
-                    step=self._step,
-                    status="failed",
-                    details=f"Subagent failed: {name}",
-                    data={"subagent_name": name},
+            messages = getattr(subagent, "messages", None)
+            if messages is not None:
+                child_tasks.append(asyncio.create_task(
+                    self._consume_messages(messages, new_id)
                 ))
 
-        # Consume coordinator tool calls
-        async for tc in self._iter_channel(getattr(stream, "tool_calls", None)):
+            tool_calls = getattr(subagent, "tool_calls", None)
+            if tool_calls is not None:
+                child_tasks.append(asyncio.create_task(
+                    self._consume_tool_calls(tool_calls, new_id, subagent_name=name)
+                ))
+
+        if child_tasks:
+            await asyncio.gather(*child_tasks)
+
+    async def _consume_tool_calls(self, channel, new_id, subagent_name: str | None = None) -> None:
+        """Consume tool call projections and render calls/results."""
+        async for tc in self._iter_channel(channel):
             self._step += 1
             tool_name = getattr(tc, "tool_name", "?")
             tool_input = getattr(tc, "input", {})
+            event_type = (
+                EventType.SUBAGENT_TOOL_CALL
+                if subagent_name else EventType.COORDINATOR_TOOL_CALL
+            )
+            data = {"tool_name": tool_name}
+            if subagent_name:
+                data["subagent_name"] = subagent_name
             await self._bus.publish(Event(
-                id=_new_ulid(),
+                id=new_id(),
                 session_id=self._session_id,
-                type=EventType.COORDINATOR_TOOL_CALL,
+                type=event_type,
                 step=self._step,
                 status="in_progress",
                 details=f"{tool_name}({str(tool_input)[:200]})",
+                data=data,
             ))
 
-            # Notify renderer
             if self._renderer and hasattr(self._renderer, "on_tool_call"):
                 self._renderer.on_tool_call(tool_name, tool_input)
 
@@ -303,23 +265,31 @@ class EventStreamAdapter:
                 error = getattr(tc, "error", None)
                 if output is not None:
                     await self._bus.publish(Event(
-                        id=_new_ulid(),
+                        id=new_id(),
                         session_id=self._session_id,
-                        type=EventType.COORDINATOR_TOOL_RESULT,
+                        type=(
+                            EventType.SUBAGENT_TOOL_RESULT
+                            if subagent_name else EventType.COORDINATOR_TOOL_RESULT
+                        ),
                         step=self._step,
                         status="done",
                         details=str(output)[:500],
+                        data=data,
                     ))
                     if self._renderer and hasattr(self._renderer, "on_tool_result"):
                         self._renderer.on_tool_result(tool_name, str(output)[:500], success=True)
                 elif error is not None:
                     await self._bus.publish(Event(
-                        id=_new_ulid(),
+                        id=new_id(),
                         session_id=self._session_id,
-                        type=EventType.COORDINATOR_TOOL_RESULT,
+                        type=(
+                            EventType.SUBAGENT_TOOL_RESULT
+                            if subagent_name else EventType.COORDINATOR_TOOL_RESULT
+                        ),
                         step=self._step,
                         status="failed",
                         details=str(error)[:500],
+                        data=data,
                     ))
                     if self._renderer and hasattr(self._renderer, "on_tool_result"):
                         self._renderer.on_tool_result(tool_name, str(error)[:500], success=False)

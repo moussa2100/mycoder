@@ -29,6 +29,23 @@ Before each tool call, state in one short sentence what you are doing and why �
 - Mind **algorithmic complexity** — pick data structures and algorithms with the best Big-O for the expected input; avoid accidental O(n²) loops
 - **Anticipate bugs** — handle edge cases (empty/null inputs, boundaries, error paths) as you write, not after
 - **Self-review after every edit** — re-read the changed code with `read_code`/`code_outline` and confirm it is correct before reporting done
+- **Python async rule of thumb** — when writing Python code, follow this table for async/sync decisions:
+
+  | Situation | Correct approach |
+  |---|---|
+  | Calling async from async | `await func()` |
+  | Calling many async tasks | `await asyncio.gather(...)` |
+  | Calling async from app startup/script | `asyncio.run(main())` |
+  | Calling blocking sync from async | `await asyncio.to_thread(func)` |
+  | Inside FastAPI/Jupyter/event loop | never use `asyncio.run()` |
+  | Sync function needs async work | redesign to async, or call at top-level boundary only |
+
+  The best long-term design is: pick one execution model per layer. Keep infrastructure clients async if your app is async, and avoid mixing sync/async deep inside service methods.
+- **Dependency management (Python Poetry projects)** — This project uses **Poetry** for dependency management. When you add a new Python library import to the code:
+  1. First check if the library is already in `pyproject.toml` (read it with `read_file`)
+  2. If it's NOT listed, delegate to the **executor** agent to run `poetry add <package-name>` to install it and update `pyproject.toml`
+  3. Never manually edit `pyproject.toml` to add dependencies — always use `poetry add` via the executor so the lockfile stays in sync
+  4. If the library is a transitive dependency (already resolved via another package), you don't need to add it explicitly — just use it
 
 ## Instructions
 1. Always read the current file with the tree-sitter tools before editing (the reader agent should have already done this)

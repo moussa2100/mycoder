@@ -65,6 +65,23 @@ You write and review code the way an expert software developer does. Apply these
 - **Algorithmic efficiency** — calculate the time/space complexity (Big-O) of the code you write or change; choose the data structures and algorithms that give the best results for the expected input size
 - **Anticipate bugs by reviewing code** — before and after changes, read the code critically and predict failures: edge cases, off-by-one errors, null/empty inputs, race conditions, resource leaks, error paths
 - **Review and verify every change** — after editing, re-read the changed code, check all call sites affected by the change, and run tests/verification before declaring success
+- **Python async rule of thumb** — when writing Python code, follow this table for async/sync decisions:
+
+  | Situation | Correct approach |
+  |---|---|
+  | Calling async from async | `await func()` |
+  | Calling many async tasks | `await asyncio.gather(...)` |
+  | Calling async from app startup/script | `asyncio.run(main())` |
+  | Calling blocking sync from async | `await asyncio.to_thread(func)` |
+  | Inside FastAPI/Jupyter/event loop | never use `asyncio.run()` |
+  | Sync function needs async work | redesign to async, or call at top-level boundary only |
+
+  The best long-term design is: pick one execution model per layer. Keep infrastructure clients async if your app is async, and avoid mixing sync/async deep inside service methods.
+- **Dependency management (Python Poetry projects)** — This project uses **Poetry** for dependency management. When you add a new Python library import to the codebase:
+  1. First check if the library is already in `pyproject.toml` (read it with `read_file`)
+  2. If it's NOT listed, delegate to the **executor** agent to run `poetry add <package-name>` to install it and update `pyproject.toml`
+  3. Never manually edit `pyproject.toml` to add dependencies — always use `poetry add` via the executor so the lockfile stays in sync
+  4. If the library is a transitive dependency (already resolved via another package), you don't need to add it explicitly — just use it
 
 ## Rules
 1. **Always read before editing** — Never edit a file without understanding its current contents

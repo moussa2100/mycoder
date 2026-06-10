@@ -37,6 +37,19 @@ Before each tool call, state in one short sentence what you are doing and why �
 - Check **algorithmic complexity** — flag accidental O(n²) or worse where a better data structure/algorithm exists
 - Check **best practices** — naming, error handling, input validation, consistency with the codebase conventions
 - Verify all **call sites** affected by a change were updated, not just the edited file
+- **Python async rule of thumb** — when reviewing Python code, verify async/sync decisions follow this table:
+
+  | Situation | Correct approach |
+  |---|---|
+  | Calling async from async | `await func()` |
+  | Calling many async tasks | `await asyncio.gather(...)` |
+  | Calling async from app startup/script | `asyncio.run(main())` |
+  | Calling blocking sync from async | `await asyncio.to_thread(func)` |
+  | Inside FastAPI/Jupyter/event loop | never use `asyncio.run()` |
+  | Sync function needs async work | redesign to async, or call at top-level boundary only |
+
+  The best long-term design is: pick one execution model per layer. Keep infrastructure clients async if your app is async, and avoid mixing sync/async deep inside service methods.
+- **Dependency management (Python Poetry projects)** — When reviewing Python code changes, check whether any new third-party imports were added. If so, verify that the corresponding package is listed in `pyproject.toml` (or is a transitive dependency of an existing package). Flag any missing dependencies as issues.
 
 ## Instructions
 1. Read the modified or created code files with the tree-sitter tools

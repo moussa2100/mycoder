@@ -23,6 +23,16 @@ if TYPE_CHECKING:
     from pgimcode.approval import ApprovalGate
 
 
+_DIRECT_RENDERED_EVENT_TYPES = {
+    EventType.COORDINATOR_MESSAGE,
+    EventType.COORDINATOR_TOOL_CALL,
+    EventType.COORDINATOR_TOOL_RESULT,
+    EventType.SUBAGENT_MESSAGE,
+    EventType.SUBAGENT_TOOL_CALL,
+    EventType.SUBAGENT_TOOL_RESULT,
+}
+
+
 def _drain_pending_input(grace_seconds: float = 0.08) -> str:
     """Collect terminal input that is already buffered (the rest of a multiline paste).
 
@@ -114,6 +124,11 @@ class ChatRenderer:
 
     def add_event(self, event: Event) -> None:
         """Print an event inline with label and color using Rich Text (ASCII-safe)."""
+        # v3 streaming events are already rendered through direct renderer hooks
+        # (assistant text blocks and tool panels). Printing them here duplicates
+        # the same content as raw yellow status lines.
+        if event.type in _DIRECT_RENDERED_EVENT_TYPES:
+            return
         # Don't interrupt a token stream with status lines.
         if self._stream_active and event.type not in (
             EventType.COMPLETED, EventType.FAILED
