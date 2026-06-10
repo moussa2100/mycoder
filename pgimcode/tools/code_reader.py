@@ -84,11 +84,22 @@ def create_code_tools(root: Path) -> list:
     """Create tree-sitter code tools bound to a workspace root, for deepagents."""
     root = Path(root).resolve()
 
+    def _check_target(path: str) -> tuple[Path | None, str | None]:
+        """Resolve a path and return (target, error_message)."""
+        target = resolve_path(root, path)
+        if target is None:
+            return None, f"Error: path escapes the workspace: {path}"
+        if target.is_dir():
+            return None, f"Error: {path} is a directory — use ls(path=\"{path}\") to list it, then read files individually."
+        if not target.is_file():
+            return None, f"Error: file not found: {path}"
+        return target, None
+
     def code_outline(path: str) -> str:
         """Get the tree-sitter structural outline of a source code file: imports, classes, methods and functions with their line ranges. ALWAYS call this first before reading a code file — it is the cheapest way to understand a file and decide which lines or symbols to read."""
-        target = resolve_path(root, path)
-        if target is None or not target.is_file():
-            return f"Error: file not found: {path}"
+        target, err = _check_target(path)
+        if err:
+            return err
         if not is_code_file(target):
             return f"Not a code file (no tree-sitter grammar): {path}. Use read_file instead."
         total = target.read_text(encoding="utf-8", errors="replace").count("\n") + 1
@@ -96,9 +107,9 @@ def create_code_tools(root: Path) -> list:
 
     def read_code(path: str, start_line: int = 0, end_line: int = 0) -> str:
         """Read a source code file THROUGH tree-sitter. Returns a structural outline (parsed with tree-sitter) followed by the source with line numbers. Use start_line/end_line (1-based, inclusive) to read a specific range. This is the REQUIRED tool for reading any code file — never use read_file for code."""
-        target = resolve_path(root, path)
-        if target is None or not target.is_file():
-            return f"Error: file not found: {path}"
+        target, err = _check_target(path)
+        if err:
+            return err
         if not is_code_file(target):
             return f"Not a code file (no tree-sitter grammar): {path}. Use read_file instead."
         try:
@@ -124,9 +135,9 @@ def create_code_tools(root: Path) -> list:
 
     def read_symbol(path: str, symbol_name: str) -> str:
         """Read the exact source of a single function, class or method from a code file, located via the tree-sitter parse tree. Much cheaper than reading the whole file — prefer this when you only need one symbol."""
-        target = resolve_path(root, path)
-        if target is None or not target.is_file():
-            return f"Error: file not found: {path}"
+        target, err = _check_target(path)
+        if err:
+            return err
         if not is_code_file(target):
             return f"Not a code file (no tree-sitter grammar): {path}."
         symbols = get_symbols(target)

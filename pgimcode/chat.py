@@ -38,6 +38,7 @@ class ChatRenderer:
         self._stream_chars = 0
         self._assistant_buffer = ""
         self._suppress_live_stream = False
+        self._printed_texts: set[str] = set()
 
     def show_welcome(self) -> None:
         """Display welcome banner at chat start."""
@@ -66,6 +67,7 @@ class ChatRenderer:
     def start_turn(self, task: str) -> None:
         """Print the user's task/prompt at the start of a turn."""
         self._turn_start = time.time()
+        self._printed_texts.clear()
         self._console.print()
         self._console.print(f"  [bold bright_white]> {task}[/]")
         self._console.print()
@@ -137,8 +139,32 @@ class ChatRenderer:
                 padding=(0, 1),
             ))
 
+        if content:
+            self._printed_texts.add(self._dedup_key(content))
         self._assistant_buffer = ""
         self._suppress_live_stream = False
+
+    def show_assistant_text(self, text: str) -> None:
+        """Print an assistant thinking/narration block between tool calls.
+
+        Deduplicated against text already streamed token-by-token, so the same
+        message is never shown twice.
+        """
+        content = (text or "").strip()
+        if not content:
+            return
+        key = self._dedup_key(content)
+        if key in self._printed_texts:
+            return
+        self.on_assistant_end()
+        self._printed_texts.add(key)
+        self._print_assistant_header(inline=False)
+        self._console.print(Markdown(content))
+
+    @staticmethod
+    def _dedup_key(text: str) -> str:
+        """Normalize whitespace so streamed and complete messages compare equal."""
+        return " ".join(text.split())
 
     def on_tool_call(self, name: str, args: dict | None = None) -> None:
         """Render a tool-call panel with name + JSON arguments."""
@@ -209,13 +235,14 @@ class ChatRenderer:
         lines = value.count("\n") + 1
         return f"{len(value)} chars hidden across {lines} line(s)"
 
-    def _print_assistant_header(self) -> None:
+    def _print_assistant_header(self, inline: bool = True) -> None:
         self._console.print()
         header = Text()
         header.append("  ● ", style="bold cyan")
         header.append("Assistant", style="bold")
         self._console.print(header)
-        self._console.file.write("  ")
+        if inline:
+            self._console.file.write("  ")
 
     def _should_start_live_stream(self, buffer: str, latest_token: str) -> bool:
         stripped = buffer.strip()

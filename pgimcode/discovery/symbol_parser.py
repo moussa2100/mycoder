@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from tree_sitter_language_pack import get_parser
 
@@ -148,15 +147,14 @@ def _extract_imports_python(root, source: str) -> list[Symbol]:
 
 
 class SymbolParser:
-    """Parse source files to extract symbols using tree-sitter."""
+    """Parse source files to extract symbols using tree-sitter.
 
-    def __init__(self):
-        self._parsers: dict[str, Callable] = {}
-
-    def _get_parser(self, language: str):
-        if language not in self._parsers:
-            self._parsers[language] = get_parser(language)
-        return self._parsers[language]
+    Parser/Tree objects from the Rust-backed language pack are unsendable
+    (must be created, used and dropped on the same thread), so a fresh parser
+    is created per parse_file call and never cached across calls. Only plain
+    Python dataclasses (FileSymbols/Symbol) escape this method, which makes
+    it safe to call from any thread (e.g. LangGraph tool executor threads).
+    """
 
     def parse_file(self, path: Path, language_hint: str | None = None) -> FileSymbols:
         language = language_hint or _guess_language(path)
@@ -164,7 +162,7 @@ class SymbolParser:
             return FileSymbols(path=path, language="unknown")
 
         try:
-            parser = self._get_parser(language)
+            parser = get_parser(language)
         except Exception:
             return FileSymbols(path=path, language=language)
 

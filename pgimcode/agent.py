@@ -113,12 +113,14 @@ class RealAgent:
         return self._task + "\n\nRelevant session context:\n" + "\n".join(lines)
 
     async def _run_streaming(self, agent, initial, config) -> None:
-        """Stream tokens + tool calls + tool results directly to a streaming renderer."""
+        """Stream tokens + tool calls + tool results (including sub-agent activity) to the renderer."""
         seen_tool_call_ids: set[str] = set()
         seen_tool_result_ids: set[str] = set()
 
-        async for mode, data in agent.astream(
-            initial, config, stream_mode=["updates", "messages"]
+        # subgraphs=True surfaces sub-agent (task tool) messages, so the user
+        # sees the thinking and tool calls happening inside delegated agents.
+        async for item in agent.astream(
+            initial, config, stream_mode=["updates", "messages"], subgraphs=True
         ):
             if self.cancelled:
                 break
@@ -127,6 +129,12 @@ class RealAgent:
                 cmd = self.slash_listener.pending_command()
                 if cmd == "model_switch":
                     await self._handle_model_switch()
+
+            # With subgraphs=True items are (namespace, mode, data); without, (mode, data)
+            if isinstance(item, tuple) and len(item) == 3:
+                _namespace, mode, data = item
+            else:
+                mode, data = item
 
             if mode == "messages":
                 msg_chunk, meta = data
@@ -144,12 +152,31 @@ class RealAgent:
                     for msg in state_update.get("messages", []) or []:
                         self._render_message(msg, seen_tool_call_ids, seen_tool_result_ids)
 
+    def _message_text(self, msg) -> str:
+        """Extract plain text from a message's content (str or content-block list)."""
+        content = getattr(msg, "content", "") or ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for block in content:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+            return "".join(parts)
+        return ""
+
     def _render_message(
         self, msg, seen_tool_call_ids: set[str], seen_tool_result_ids: set[str]
     ) -> None:
-        """Render a single agent message (assistant tool-calls or tool result)."""
+        """Render a single agent message (assistant narration, tool-calls, or tool result)."""
         tool_calls = getattr(msg, "tool_calls", None)
         if tool_calls:
+            # Show the assistant's thinking/narration that precedes the tool calls
+            narration = self._message_text(msg).strip()
+            if narration and hasattr(self.renderer, "show_assistant_text"):
+                self.renderer.show_assistant_text(narration)
             for tc in (tool_calls if isinstance(tool_calls, list) else [tool_calls]):
                 if isinstance(tc, dict):
                     tc_id = tc.get("id") or ""
@@ -189,6 +216,14 @@ class RealAgent:
             except (ValueError, TypeError):
                 pass
             self.renderer.on_tool_result(name, text, success=success)
+            return
+
+        # Plain assistant message (no tool calls) — intermediate thinking/answer.
+        # Deduplicated by the renderer against text already streamed token-by-token.
+        if role in ("ai", "assistant"):
+            text = self._message_text(msg).strip()
+            if text and hasattr(self.renderer, "show_assistant_text"):
+                self.renderer.show_assistant_text(text)
 
     def _extract_stream_text(self, msg_chunk, meta: dict | None) -> str | None:
         """Return only user-meaningful assistant narration, not tool payloads."""
