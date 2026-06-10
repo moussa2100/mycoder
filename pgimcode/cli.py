@@ -123,7 +123,7 @@ def run(
     trace_export: str | None = typer.Option(None, "--trace-export", help="Export trace to JSONL file path"),
     failure_snapshot: bool = typer.Option(False, "--failure-snapshot", help="Write failure snapshot on FAILED events"),
     real: bool = typer.Option(False, "--real", help="Use real LLM agent instead of mock"),
-    model: str | None = typer.Option(None, "--model", "-M", help="Select AI model (e.g. gpt-4o, deepseek-chat). Use 'models' subcommand to list all."),
+    model: str | None = typer.Option(None, "--model", "-M", help="Select AI model (e.g. deepseek-chat, gemini-3.5-flash). Use 'models' subcommand to list all."),
 ) -> None:
     """Run a coding task with the agent."""
     # Handle dry-run mode early
@@ -744,7 +744,7 @@ def plan(
 
 @app.command(name="models")
 def list_models(
-    provider: str = typer.Option("all", "--provider", "-p", help="Filter by provider: openai, deepseek, gemini, or all"),
+    provider: str = typer.Option("all", "--provider", "-p", help="Filter by provider: deepseek, gemini, or all"),
 ) -> None:
     """List all available AI models."""
     from rich.console import Console
@@ -775,7 +775,7 @@ def list_models(
             models = get_models_by_provider(prov)
         except ValueError:
             console.print(f"[red]Unknown provider: {provider}[/]")
-            console.print(f"[dim]Available: openai, deepseek, gemini, all[/]")
+            console.print(f"[dim]Available: deepseek, gemini, all[/]")
             raise typer.Exit(code=1)
 
     current_prov = None

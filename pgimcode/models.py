@@ -7,7 +7,6 @@ from enum import Enum
 
 
 class ModelProvider(str, Enum):
-    OPENAI = "openai"
     DEEPSEEK = "deepseek"
     GEMINI = "gemini"
 
@@ -24,42 +23,6 @@ class ModelInfo:
 
 
 AVAILABLE_MODELS: dict[str, ModelInfo] = {
-    "gpt-4o": ModelInfo(
-        id="gpt-4o",
-        name="GPT-4o",
-        provider=ModelProvider.OPENAI,
-        context_window=128000,
-        description="Best overall for coding tasks. Fast, multimodal.",
-        api_base_url="https://api.openai.com/v1",
-        pricing_note="$2.50/$10 per 1M tokens",
-    ),
-    "gpt-4o-mini": ModelInfo(
-        id="gpt-4o-mini",
-        name="GPT-4o Mini",
-        provider=ModelProvider.OPENAI,
-        context_window=128000,
-        description="Cheaper, faster version of GPT-4o. Good for simple tasks.",
-        api_base_url="https://api.openai.com/v1",
-        pricing_note="$0.15/$0.60 per 1M tokens",
-    ),
-    "gpt-4-turbo": ModelInfo(
-        id="gpt-4-turbo",
-        name="GPT-4 Turbo",
-        provider=ModelProvider.OPENAI,
-        context_window=128000,
-        description="Previous generation flagship. Still solid for coding.",
-        api_base_url="https://api.openai.com/v1",
-        pricing_note="$10/$30 per 1M tokens",
-    ),
-    "o3-mini": ModelInfo(
-        id="o3-mini",
-        name="o3-mini",
-        provider=ModelProvider.OPENAI,
-        context_window=200000,
-        description="Reasoning model. Great for complex multi-step problems.",
-        api_base_url="https://api.openai.com/v1",
-        pricing_note="$1.10/$4.40 per 1M tokens",
-    ),
     "deepseek-chat": ModelInfo(
         id="deepseek-chat",
         name="DeepSeek Chat (v3)",
@@ -79,30 +42,39 @@ AVAILABLE_MODELS: dict[str, ModelInfo] = {
         pricing_note="$0.55/$2.19 per 1M tokens",
     ),
     # Gemini models (Google AI via OpenAI-compatible endpoint)
-    "gemini-2.0-flash": ModelInfo(
-        id="gemini-2.0-flash",
-        name="Gemini 2.0 Flash",
+    "gemini-3.5-pro-preview": ModelInfo(
+        id="gemini-3.5-pro-preview",
+        name="Gemini 3.5 Pro",
         provider=ModelProvider.GEMINI,
-        context_window=128000,
-        description="Google Gemini 2.0 Flash. Fast, cost-effective.",
+        context_window=2_000_000,
+        description="Google Gemini 3.5 Pro Preview. Premium reasoning & coding with 2M context.",
+        api_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        pricing_note="~$2.50/$15.00 per 1M tokens",
+    ),
+    "gemini-3.5-flash": ModelInfo(
+        id="gemini-3.5-flash",
+        name="Gemini 3.5 Flash",
+        provider=ModelProvider.GEMINI,
+        context_window=1_000_000,
+        description="Google Gemini 3.5 Flash. Fast, cost-effective with 1M context.",
         api_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         pricing_note="$1.50/$9.00 per 1M tokens",
     ),
-    "gemini-2.5-pro": ModelInfo(
-        id="gemini-2.5-pro",
-        name="Gemini 2.5 Pro",
+    "gemini-3.1-pro": ModelInfo(
+        id="gemini-3.1-pro",
+        name="Gemini 3.1 Pro",
         provider=ModelProvider.GEMINI,
-        context_window=128000,
-        description="Google Gemini 2.5 Pro. Premium reasoning & coding.",
+        context_window=2_000_000,
+        description="Google Gemini 3.1 Pro. Strong reasoning & coding with 2M context.",
         api_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         pricing_note="$2.00/$12.00 per 1M tokens",
     ),
-    "gemini-2.0-flash-lite": ModelInfo(
-        id="gemini-2.0-flash-lite",
-        name="Gemini 2.0 Flash Lite",
+    "gemini-3.1-flash-lite": ModelInfo(
+        id="gemini-3.1-flash-lite",
+        name="Gemini 3.1 Flash Lite",
         provider=ModelProvider.GEMINI,
-        context_window=128000,
-        description="Google Gemini 2.0 Flash Lite. Cheapest option.",
+        context_window=1_000_000,
+        description="Google Gemini 3.1 Flash Lite. Cheapest Gemini option with 1M context.",
         api_base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
         pricing_note="$0.25/$1.50 per 1M tokens",
     ),
@@ -133,8 +105,7 @@ def resolve_model_info(model_id: str) -> ModelInfo:
 def get_default_model_for_provider(provider: ModelProvider) -> str:
     """Return the default model ID for a given provider."""
     defaults = {
-        ModelProvider.OPENAI: "gpt-4o",
         ModelProvider.DEEPSEEK: "deepseek-chat",
-        ModelProvider.GEMINI: "gemini-2.0-flash",
+        ModelProvider.GEMINI: "gemini-3.5-flash",
     }
-    return defaults.get(provider, "gpt-4o")
+    return defaults.get(provider, "deepseek-chat")

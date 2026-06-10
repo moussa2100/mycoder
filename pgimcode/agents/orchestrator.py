@@ -168,14 +168,11 @@ def create_orchestrator(settings: "Settings", workspace_root=None, store=None):
         model_name = settings.model_name if settings.model_name.startswith("deepseek") else "deepseek-chat"
         api_key = settings.deepseek_api_key
         base_url = settings.api_base_url or "https://api.deepseek.com/v1"
-    elif provider == "gemini":
-        model_name = settings.model_name if settings.model_name.startswith("gemini") else "gemini-2.0-flash"
+    else:
+        # Default to Gemini
+        model_name = settings.model_name if settings.model_name.startswith("gemini") else "gemini-3.5-flash"
         api_key = settings.gemini_api_key
         base_url = settings.api_base_url or "https://generativelanguage.googleapis.com/v1beta/openai/"
-    else:
-        model_name = settings.model_name if (settings.model_name.startswith("gpt") or settings.model_name.startswith("o")) else "gpt-4o"
-        api_key = settings.openai_api_key
-        base_url = settings.api_base_url or None
 
     llm_kwargs = dict(model=model_name, temperature=settings.llm_temperature)
     if api_key:

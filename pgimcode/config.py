@@ -41,11 +41,10 @@ class Settings(BaseSettings):
     self_review_enabled: bool = True
 
     # LLM settings
-    openai_api_key: str | None = None
-    model_name: str = "gpt-4o"
+    model_name: str = "gemini-3.5-flash"
     llm_max_turns: int = 50
     llm_temperature: float = 0.2
-    api_provider: str = "openai"
+    api_provider: str = "gemini"
     api_base_url: str | None = None
     deepseek_api_key: str | None = None
     gemini_api_key: str | None = None
@@ -90,11 +89,9 @@ class Settings(BaseSettings):
         """Return any available API key, preferring the active provider."""
         if self.api_provider == "deepseek" and self.deepseek_api_key:
             return self.deepseek_api_key
-        if self.api_provider == "openai" and self.openai_api_key:
-            return self.openai_api_key
         if self.api_provider == "gemini" and self.gemini_api_key:
             return self.gemini_api_key
-        return self.deepseek_api_key or self.openai_api_key or self.gemini_api_key
+        return self.deepseek_api_key or self.gemini_api_key
 
     def resolve_provider(self) -> str:
         """Auto-detect the best provider based on available (non-placeholder) keys."""
@@ -103,20 +100,15 @@ class Settings(BaseSettings):
                 return False
             return not key.endswith("-here") and len(key) > 20
 
-        has_openai = _is_real(self.openai_api_key)
         has_deepseek = _is_real(self.deepseek_api_key)
         has_gemini = _is_real(self.gemini_api_key)
 
         if self.api_provider == "deepseek" and has_deepseek:
             return "deepseek"
-        if self.api_provider == "openai" and has_openai:
-            return "openai"
         if self.api_provider == "gemini" and has_gemini:
             return "gemini"
         if has_deepseek:
             return "deepseek"
-        if has_openai:
-            return "openai"
         if has_gemini:
             return "gemini"
         return self.api_provider
