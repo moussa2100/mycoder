@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from pgimcode.config import Settings
+from pgimcode.context_schema import AgentContext
 from pgimcode.events import Event, EventBus, EventType
 from pgimcode.session import _new_ulid
 
@@ -68,13 +69,30 @@ class RealAgent:
                 workspace_root=self._workspace_root,
                 store=memory_store,
             )
-            initial = {"messages": [{"role": "user", "content": self._build_task_input()}]}
+
+            # Build runtime context for this invocation
+            ctx = AgentContext(
+                mode=self._mode,
+                workspace_root=str(self._workspace_root),
+                session_id=self._session_id,
+                recent_files=list(self._recent_files),
+                conversation_history=list(self._conversation_history),
+                preferences={"verbose": True},
+            )
+
+            initial = {
+                "messages": [{"role": "user", "content": self._build_task_input()}],
+                "recent_files": list(self._recent_files),
+                "conversation_history": list(self._conversation_history),
+                "session_mode": self._mode,
+                "current_task": self._task,
+            }
             config = {"configurable": {"thread_id": self._session_id}}
 
             if self.renderer and hasattr(self.renderer, "on_assistant_token"):
-                await self._run_streaming(agent, initial, config)
+                await self._run_streaming(agent, initial, config, context=ctx)
             else:
-                await self._run_updates_only(agent, initial, config)
+                await self._run_updates_only(agent, initial, config, context=ctx)
 
             await self._bus.publish(Event(
                 id=_new_ulid(),
@@ -122,7 +140,7 @@ class RealAgent:
             return self._task
         return self._task + "\n\nRelevant session context:\n" + "\n".join(lines)
 
-    async def _run_streaming(self, agent, initial, config) -> None:
+    async def _run_streaming(self, agent, initial, config, context=None) -> None:
         """Stream tokens + tool calls + subagent activity via the v3 event-streaming protocol.
 
         Uses ``stream_events(version="v3")`` which provides typed projections
@@ -137,16 +155,20 @@ class RealAgent:
             renderer=self.renderer,
         )
 
-        stream = await self._open_v3_event_stream(agent, initial, config)
+        stream = await self._open_v3_event_stream(agent, initial, config, context=context)
 
         # Consume the stream through the adapter (publishes events to the bus)
         await adapter.consume(stream)
 
-    async def _open_v3_event_stream(self, agent, initial, config):
+    async def _open_v3_event_stream(self, agent, initial, config, context=None):
         """Open LangGraph's async v3 stream without leaking beta warnings to CLI."""
         import warnings
 
         from langchain_core._api import LangChainBetaWarning
+
+        kwargs = dict(initial, config=config, version="v3")
+        if context is not None:
+            kwargs["context"] = context
 
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -154,7 +176,7 @@ class RealAgent:
                 message="The v3 streaming protocol on Pregel is experimental.*",
                 category=LangChainBetaWarning,
             )
-            return await agent.astream_events(initial, config, version="v3")
+            return await agent.astream_events(**kwargs)
 
     def _message_text(self, msg) -> str:
         """Extract plain text from a message's content (str or content-block list)."""
@@ -262,7 +284,7 @@ class RealAgent:
             return None
         return text
 
-    async def _run_updates_only(self, agent, initial, config) -> None:
+    async def _run_updates_only(self, agent, initial, config, context=None) -> None:
         """Legacy path: emit one event per node update via the bus (no renderer streaming).
 
         Uses ``stream_events(version="v3")`` with the ``EventStreamAdapter``
@@ -272,7 +294,7 @@ class RealAgent:
 
         adapter = EventStreamAdapter(bus=self._bus, session_id=self._session_id)
 
-        stream = await self._open_v3_event_stream(agent, initial, config)
+        stream = await self._open_v3_event_stream(agent, initial, config, context=context)
         await adapter.consume(stream)
 
     def _parse_deepagents_event(self, node_name: str, update: dict) -> str | None:

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from langchain_openai import ChatOpenAI
 from deepagents import CompiledSubAgent, create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend, StoreBackend
+from deepagents.middleware.summarization import create_summarization_tool_middleware
 from langgraph.store.memory import InMemoryStore
 
 from pgimcode.agents.reader import create_reader_subagent
@@ -14,6 +15,9 @@ from pgimcode.agents.editor import create_editor_subagent
 from pgimcode.agents.executor import create_executor_subagent
 from pgimcode.agents.planner import create_planner_subagent
 from pgimcode.agents.verifier import create_verifier_subagent
+from pgimcode.context_schema import AgentContext
+from pgimcode.dynamic_prompt import DynamicPromptMiddleware
+from pgimcode.state_schema import PgimcodeState
 
 if TYPE_CHECKING:
     from pgimcode.config import Settings
@@ -227,11 +231,20 @@ def create_orchestrator(settings: "Settings", workspace_root=None, store=None):
     # Memory files loaded at agent startup
     memory = ["/memories/AGENTS.md", "/memories/CHANGES.md"]
 
+    # Skills for progressive disclosure
+    skills = ["/skills/coding/", "/skills/workflow/"]
+
     # Tree-sitter powered code reading tools (shared with all sub-agents)
     from pgimcode.tools.code_reader import create_code_tools
     from pgimcode.tools.web_fetch import web_fetch
 
     code_tools = create_code_tools(root)
+
+    # On-demand compaction tool — lets the agent compact its own context
+    # between tasks instead of waiting for the 85% threshold.
+    compaction_middleware = create_summarization_tool_middleware(
+        model, backend
+    )
 
     agent = create_deep_agent(
         model=model,
@@ -240,7 +253,11 @@ def create_orchestrator(settings: "Settings", workspace_root=None, store=None):
         backend=backend,
         store=store,
         memory=memory,
+        skills=skills,
         tools=[*code_tools, web_fetch],
+        context_schema=AgentContext,
+        state_schema=PgimcodeState,
+        middleware=[DynamicPromptMiddleware(), compaction_middleware],
     )
 
     return agent
