@@ -8,6 +8,8 @@ import time
 from typing import TYPE_CHECKING
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import FuzzyWordCompleter
+from prompt_toolkit.shortcuts import CompleteStyle
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
@@ -416,6 +418,34 @@ class ChatSession:
     def session_id(self) -> str:
         return self._session_id
 
+    @staticmethod
+    def _build_completer() -> FuzzyWordCompleter:
+        """Build a FuzzyWordCompleter for slash commands.
+
+        The completer activates when the user types ``/`` followed by
+        characters, and fuzzy-matches against all known commands so
+        ``/mod`` → ``/model``, ``/sk`` → ``/skills``, etc.
+        """
+        commands = [
+            "/help",
+            "/h",
+            "/model",
+            "/quit",
+            "/q",
+            "/clear",
+            "/sessions",
+            "/plan",
+            "/skills",
+            "/skills list",
+            "/skills view",
+            "/skills use",
+            "/skills deactivate",
+        ]
+        return FuzzyWordCompleter(
+            words=commands,
+            WORD=True,              # treat the whole input as one token
+        )
+
     async def start(self) -> None:
         """Start the interactive chat loop."""
         from pgimcode.session import SessionStore
@@ -457,7 +487,10 @@ class ChatSession:
         # ONE buffer (only a real Enter submits), plus up-arrow input history.
         # Falls back to a plain prompt when stdin is not a terminal (pipes).
         is_tty = sys.stdin.isatty()
-        prompt_session: PromptSession | None = PromptSession() if is_tty else None
+        completer = self._build_completer()
+        prompt_session: PromptSession | None = (
+            PromptSession(completer=completer, complete_style=CompleteStyle.MULTI_COLUMN) if is_tty else None
+        )
 
         while self._running:
             try:
