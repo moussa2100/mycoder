@@ -30,6 +30,7 @@ except ImportError as e:
 # Try file-based stores
 import os
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -62,7 +63,8 @@ class FileBasedStore:
             return None
         value = json.loads(p.read_text(encoding="utf-8"))
         from langgraph.store.base import Item
-        return Item(namespace=list(namespace), key=key, value=value)
+        now = datetime.now(timezone.utc)
+        return Item(namespace=tuple(namespace), key=key, value=value, created_at=now, updated_at=now)
     
     def search(self, namespace_prefix):
         """List all items under a namespace prefix."""
@@ -74,10 +76,13 @@ class FileBasedStore:
         for json_file in ns_path.rglob("*.json"):
             key_parts = json_file.stem
             value = json.loads(json_file.read_text(encoding="utf-8"))
+            now = datetime.now(timezone.utc)
             results.append(Item(
-                namespace=list(namespace_prefix) if namespace_prefix else [],
+                namespace=tuple(namespace_prefix) if namespace_prefix else (),
                 key=key_parts,
                 value=value,
+                created_at=now,
+                updated_at=now,
             ))
         return results
 

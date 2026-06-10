@@ -35,6 +35,16 @@ _EVENT_ICONS: dict[EventType, str] = {
     EventType.COMPLETED: "✅",
     EventType.FAILED: "❌",
     EventType.MODEL_SWITCHED: "🔄",
+    # Event streaming (v3 protocol)
+    EventType.SUBAGENT_STARTED: "🧑‍💻",
+    EventType.SUBAGENT_COMPLETED: "✅",
+    EventType.SUBAGENT_FAILED: "❌",
+    EventType.SUBAGENT_MESSAGE: "💬",
+    EventType.SUBAGENT_TOOL_CALL: "🔧",
+    EventType.SUBAGENT_TOOL_RESULT: "📦",
+    EventType.COORDINATOR_MESSAGE: "🤖",
+    EventType.COORDINATOR_TOOL_CALL: "🔧",
+    EventType.COORDINATOR_TOOL_RESULT: "📦",
 }
 
 # Status to icon mapping

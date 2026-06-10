@@ -123,44 +123,38 @@ class RealAgent:
         return self._task + "\n\nRelevant session context:\n" + "\n".join(lines)
 
     async def _run_streaming(self, agent, initial, config) -> None:
-        """Stream tokens + tool calls + tool results (including sub-agent activity) to the renderer."""
-        seen_tool_call_ids: set[str] = set()
-        seen_tool_result_ids: set[str] = set()
+        """Stream tokens + tool calls + subagent activity via the v3 event-streaming protocol.
 
-        # subgraphs=True surfaces sub-agent (task tool) messages, so the user
-        # sees the thinking and tool calls happening inside delegated agents.
-        async for item in agent.astream(
-            initial, config, stream_mode=["updates", "messages"], subgraphs=True
-        ):
-            if self.cancelled:
-                break
+        Uses ``stream_events(version="v3")`` which provides typed projections
+        for messages, subagents, and tool calls. The ``EventStreamAdapter``
+        bridges these projections to the ``EventBus`` for rendering and logging.
+        """
+        from pgimcode.events import EventStreamAdapter
 
-            if self.slash_listener and self.slash_listener.has_command():
-                cmd = self.slash_listener.pending_command()
-                if cmd == "model_switch":
-                    await self._handle_model_switch()
+        adapter = EventStreamAdapter(
+            bus=self._bus,
+            session_id=self._session_id,
+            renderer=self.renderer,
+        )
 
-            # With subgraphs=True items are (namespace, mode, data); without, (mode, data)
-            if isinstance(item, tuple) and len(item) == 3:
-                _namespace, mode, data = item
-            else:
-                mode, data = item
+        stream = await self._open_v3_event_stream(agent, initial, config)
 
-            if mode == "messages":
-                msg_chunk, meta = data
-                content = self._extract_stream_text(msg_chunk, meta)
-                if content:
-                    self.renderer.on_assistant_token(content)
-                continue
+        # Consume the stream through the adapter (publishes events to the bus)
+        await adapter.consume(stream)
 
-            if mode == "updates":
-                for node_name, state_update in (data or {}).items():
-                    if node_name in ("__end__", "__start__", "start"):
-                        continue
-                    if not isinstance(state_update, dict):
-                        continue
-                    for msg in state_update.get("messages", []) or []:
-                        self._render_message(msg, seen_tool_call_ids, seen_tool_result_ids)
+    async def _open_v3_event_stream(self, agent, initial, config):
+        """Open LangGraph's async v3 stream without leaking beta warnings to CLI."""
+        import warnings
+
+        from langchain_core._api import LangChainBetaWarning
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="The v3 streaming protocol on Pregel is experimental.*",
+                category=LangChainBetaWarning,
+            )
+            return await agent.astream_events(initial, config, version="v3")
 
     def _message_text(self, msg) -> str:
         """Extract plain text from a message's content (str or content-block list)."""
@@ -269,27 +263,17 @@ class RealAgent:
         return text
 
     async def _run_updates_only(self, agent, initial, config) -> None:
-        """Legacy path: emit one event per node update via the bus (no renderer streaming)."""
-        step = 0
-        async for chunk in agent.astream(initial, config):
-            if self.cancelled:
-                break
+        """Legacy path: emit one event per node update via the bus (no renderer streaming).
 
-            if self.slash_listener and self.slash_listener.has_command():
-                cmd = self.slash_listener.pending_command()
-                if cmd == "model_switch":
-                    await self._handle_model_switch()
+        Uses ``stream_events(version="v3")`` with the ``EventStreamAdapter``
+        to publish structured events even without a token-level renderer.
+        """
+        from pgimcode.events import EventStreamAdapter
 
-            for node_name, state_update in chunk.items():
-                if node_name in ("__end__", "__start__", "start"):
-                    continue
-                if state_update is None:
-                    continue
-                detail = self._parse_deepagents_event(node_name, state_update)
-                if detail:
-                    step += 1
-                    event_type = self._event_type_for_node(node_name)
-                    await self._emit_event(event_type, step, detail)
+        adapter = EventStreamAdapter(bus=self._bus, session_id=self._session_id)
+
+        stream = await self._open_v3_event_stream(agent, initial, config)
+        await adapter.consume(stream)
 
     def _parse_deepagents_event(self, node_name: str, update: dict) -> str | None:
         """Parse a deepagents streaming event into a human-readable string."""
