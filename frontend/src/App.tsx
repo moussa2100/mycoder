@@ -25,6 +25,10 @@ export default function App() {
   }, [workspaceDir]);
 
   useEffect(() => {
+    window.electronAPI?.getWorkspace?.().then((dir) => {
+      if (dir) setWorkspaceDir(dir);
+    });
+
     checkBackendHealth().then(() => {
       loadFromAPI();
       loadChatFromAPI();

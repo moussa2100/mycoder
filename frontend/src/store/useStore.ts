@@ -82,7 +82,12 @@ export const useStore = create<AppState>((set, get) => ({
   setView: (v) => set({ view: v }),
 
   workspaceDir: '',
-  setWorkspaceDir: (dir) => set({ workspaceDir: dir }),
+  setWorkspaceDir: (dir) => {
+    set({ workspaceDir: dir });
+    window.electronAPI?.setWorkspace?.(dir).catch((err) => {
+      console.warn('[setWorkspaceDir] electron persistence failed:', err);
+    });
+  },
 
   isBackendAvailable: false,
   setBackendAvailable: (v) => set({ isBackendAvailable: v }),

@@ -22,6 +22,7 @@ export default function CreateTaskModal() {
   const plan = useStore((s) => s.llmPlan);
   const isGenerating = useStore((s) => s.isGeneratingPlan);
   const planConversation = useStore((s) => s.planConversation);
+  const workspaceDir = useStore((s) => s.workspaceDir);
   const setTitle = useStore((s) => s.setNewTaskTitle);
   const setDescription = useStore((s) => s.setNewTaskDescription);
   const setModel = useStore((s) => s.setSelectedModel);
@@ -50,6 +51,7 @@ export default function CreateTaskModal() {
           title: title.trim(),
           description: description.trim(),
           model,
+          workspace_dir: workspaceDir,
         }),
       });
       if (!res.ok) {
@@ -89,6 +91,7 @@ export default function CreateTaskModal() {
           model,
           feedback: feedbackInput.trim(),
           current_plan: plan,
+          workspace_dir: workspaceDir,
         }),
       });
       if (!res.ok) {

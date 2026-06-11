@@ -132,6 +132,7 @@ export async function generatePlan(
     model?: string;
     feedback?: string;
     current_plan?: string;
+    workspace_dir?: string;
   },
 ): Promise<{ plan: string; conversation: string }> {
   return request(`/api/tasks/${taskId}/plan`, {
@@ -148,6 +149,7 @@ export function generatePlanStream(
     model?: string;
     feedback?: string;
     current_plan?: string;
+    workspace_dir?: string;
   },
   onChunk: (chunk: string) => void,
   onDone: (fullPlan: string) => void,

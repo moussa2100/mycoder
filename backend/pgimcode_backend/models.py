@@ -53,6 +53,7 @@ class PlanRequest(BaseModel):
     model: str = "gemini-3.5-flash"
     feedback: str | None = None
     current_plan: str | None = None
+    workspace_dir: str = ""
 
 
 class PlanResponse(BaseModel):

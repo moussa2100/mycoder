@@ -11,7 +11,6 @@ either as a single string (generate_plan) or as an async chunk stream
 from __future__ import annotations
 
 import asyncio
-import os
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,7 +70,23 @@ def _finalize(store: SessionStore, session, step_count: int, failed: bool = Fals
         pass
 
 
-def _build_agent(bus: EventBus, session_id: str, task: str, mode: str) -> RealAgent:
+def _resolve_workspace_root(workspace_dir: str | None) -> Path | None:
+    if not workspace_dir:
+        return None
+
+    root = Path(workspace_dir).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f"Workspace directory does not exist: {root}")
+    return root
+
+
+def _build_agent(
+    bus: EventBus,
+    session_id: str,
+    task: str,
+    mode: str,
+    workspace_dir: str | None = None,
+) -> RealAgent:
     return RealAgent(
         bus=bus,
         session_id=session_id,
@@ -81,15 +96,8 @@ def _build_agent(bus: EventBus, session_id: str, task: str, mode: str) -> RealAg
         renderer=None,
         recent_files=[],
         conversation_history=[],
+        workspace_root=_resolve_workspace_root(workspace_dir),
     )
-
-
-def _chdir_guard(workspace_dir: str | None):
-    """Context-manager-ish helper: chdir into workspace_dir, return prior cwd."""
-    prior = os.getcwd()
-    if workspace_dir and os.path.isdir(workspace_dir):
-        os.chdir(workspace_dir)
-    return prior
 
 
 async def _run_collecting(agent: RealAgent, bus: EventBus) -> str:
@@ -149,6 +157,7 @@ async def generate_plan(
     model: str,
     feedback: str | None = None,
     current_plan: str | None = None,
+    workspace_dir: str | None = None,
 ) -> str:
     if feedback and current_plan:
         prompt = (
@@ -168,7 +177,7 @@ async def generate_plan(
     store, session, bus = _make_session(task=f"plan: {title}", mode="plan")
     failed = False
     try:
-        agent = _build_agent(bus, session.id, prompt, mode="plan")
+        agent = _build_agent(bus, session.id, prompt, mode="plan", workspace_dir=workspace_dir)
         result = await _run_collecting(agent, bus)
         return result or "Plan generated."
     except Exception as e:
@@ -193,11 +202,10 @@ async def execute_task_stream(
         f"Report progress step by step."
     )
     store, session, bus = _make_session(task=f"execute: {task_title}", mode="build")
-    prior_cwd = _chdir_guard(workspace_dir)
     failed = False
     step = 0
     try:
-        agent = _build_agent(bus, session.id, prompt, mode="build")
+        agent = _build_agent(bus, session.id, prompt, mode="build", workspace_dir=workspace_dir)
         async for chunk in _run_streaming(agent, bus):
             step += 1
             yield chunk
@@ -205,7 +213,6 @@ async def execute_task_stream(
         failed = True
         yield f"\n## Execution Error\n\n{e}"
     finally:
-        os.chdir(prior_cwd)
         _finalize(store, session, step_count=step, failed=failed)
 
 
@@ -217,11 +224,10 @@ async def chat_stream(
     workspace_dir: str,
 ) -> AsyncIterator[str]:
     store, session, bus = _make_session(task=message[:200], mode="build")
-    prior_cwd = _chdir_guard(workspace_dir)
     failed = False
     step = 0
     try:
-        agent = _build_agent(bus, session.id, message, mode="build")
+        agent = _build_agent(bus, session.id, message, mode="build", workspace_dir=workspace_dir)
         async for chunk in _run_streaming(agent, bus):
             step += 1
             yield chunk
@@ -229,5 +235,4 @@ async def chat_stream(
         failed = True
         yield f"Error: {e}"
     finally:
-        os.chdir(prior_cwd)
         _finalize(store, session, step_count=step, failed=failed)

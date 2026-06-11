@@ -55,6 +55,7 @@ class RealAgent:
         conversation_history: list[tuple[str, bool]] | None = None,
         active_skills: list[str] | None = None,
         checkpointer: object | None = None,
+        workspace_root: str | Path | None = None,
     ):
         self._bus = bus
         self._session_id = session_id
@@ -69,7 +70,7 @@ class RealAgent:
         self._recent_files = recent_files or []
         self._conversation_history = conversation_history or []
         self._active_skills = active_skills or []
-        self._workspace_root = self._resolve_root()
+        self._workspace_root = self._resolve_root(workspace_root)
         self._model_changed = False
         self._checkpointer = checkpointer
 
@@ -390,7 +391,10 @@ class RealAgent:
             return EventType.PATCH_APPLYING
         return EventType.SESSION_STARTED
 
-    def _resolve_root(self) -> Path:
+    def _resolve_root(self, workspace_root: str | Path | None = None) -> Path:
+        if workspace_root:
+            return Path(workspace_root).expanduser().resolve()
+
         cwd = Path.cwd().resolve()
         for parent in [cwd] + list(cwd.parents):
             if (parent / "pyproject.toml").exists() or (parent / ".env").exists():

@@ -13,6 +13,7 @@ export function useTaskActions(task: Task | null) {
   const setStopStreaming = useStore((s) => s.setStopStreaming);
   const tasks = useStore((s) => s.tasks);
   const runTaskExecution = useStore((s) => s.runTaskExecution);
+  const workspaceDir = useStore((s) => s.workspaceDir);
 
   async function persist(next: Task) {
     updateTask(next);
@@ -61,6 +62,7 @@ export function useTaskActions(task: Task | null) {
         model: task.model,
         feedback: feedback.trim(),
         current_plan: task.plan,
+        workspace_dir: workspaceDir,
       });
       const next: Task = {
         ...task,

@@ -190,6 +190,7 @@ async def generate_plan_temp(body: PlanRequest):
         model=body.model or "gemini-3.5-flash",
         feedback=body.feedback,
         current_plan=body.current_plan,
+        workspace_dir=body.workspace_dir,
     )
     return PlanResponse(plan=plan_text, conversation="")
 
@@ -214,6 +215,7 @@ async def generate_plan_endpoint(task_id: str, body: PlanRequest):
             model=body.model or task.model,
             feedback=body.feedback,
             current_plan=body.current_plan or task.plan,
+            workspace_dir=body.workspace_dir,
         )
 
         # Save plan to task
@@ -249,6 +251,7 @@ async def generate_plan_stream(task_id: str, body: PlanRequest):
             model=body.model,
             feedback=body.feedback,
             current_plan=body.current_plan,
+            workspace_dir=body.workspace_dir,
         )
         # Simulate streaming chunks
         chunks = plan_text.split(" ")
