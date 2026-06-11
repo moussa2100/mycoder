@@ -3,17 +3,38 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
-from pathlib import Path
 import json
+import warnings
+from pathlib import Path
+from typing import Any
 
+from langchain_core._api import LangChainBetaWarning
+
+from pgimcode.agents.orchestrator import create_orchestrator
 from pgimcode.config import Settings
 from pgimcode.context_schema import AgentContext
-from pgimcode.events import Event, EventBus, EventType
+from pgimcode.events import Event, EventBus, EventStreamAdapter, EventType
+from pgimcode.input_handler import ModelSelector
+from pgimcode.memory.store import PersistentFileStore
 from pgimcode.session import _new_ulid
 
-if TYPE_CHECKING:
-    from pgimcode.approval import ApprovalGate
+from pgimcode.approval import ApprovalGate
+from pgimcode.renderer_protocol import RendererProtocol
+
+
+def _extract_content_text(content: Any) -> str:
+    """Extract plain text from message content (str or content-block list)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        return "".join(parts)
+    return ""
 
 
 class RealAgent:
@@ -24,12 +45,12 @@ class RealAgent:
         bus: EventBus,
         session_id: str,
         task: str,
-        approval_gate: "ApprovalGate | None" = None,
-        context_manager=None,
+        approval_gate: ApprovalGate | None = None,
+        context_manager: object | None = None,
         mode: str = "build",
         settings: Settings | None = None,
-        slash_listener=None,
-        renderer=None,
+        slash_listener: object | None = None,
+        renderer: RendererProtocol | None = None,
         recent_files: list[str] | None = None,
         conversation_history: list[tuple[str, bool]] | None = None,
         active_skills: list[str] | None = None,
@@ -56,86 +77,87 @@ class RealAgent:
 
     async def run(self) -> None:
         """Run the deepagents orchestrator and surface failures as events."""
-        from pgimcode.agents.orchestrator import create_orchestrator
-        from pgimcode.memory.store import PersistentFileStore
-
         self._bus.subscribe(self._on_model_switched)
 
         try:
-            await self._bus.publish(Event(
-                id=_new_ulid(),
-                session_id=self._session_id,
-                type=EventType.SESSION_STARTED,
-                step=0,
-                status="in_progress",
-                details=f"Starting task: {self._task}",
-            ))
+            await self._emit_lifecycle(EventType.SESSION_STARTED, f"Starting task: {self._task}")
 
-            # Create persistent long-term memory store
-            memory_dir = self._workspace_root / ".pgim_memory"
-            memory_store = PersistentFileStore(root_dir=memory_dir)
+            memory_store = PersistentFileStore(
+                root_dir=self._workspace_root / ".pgim_memory"
+            )
 
-            while True:
-                agent = create_orchestrator(
-                    self._settings,
-                    workspace_root=self._workspace_root,
-                    store=memory_store,
-                )
+            await self._run_with_model_switch_loop(memory_store)
 
-                # Build runtime context for this invocation
-                ctx = AgentContext(
-                    mode=self._mode,
-                    workspace_root=str(self._workspace_root),
-                    session_id=self._session_id,
-                    recent_files=list(self._recent_files),
-                    conversation_history=list(self._conversation_history),
-                    active_skills=list(self._active_skills),
-                    preferences={"verbose": True},
-                )
-
-                initial = {
-                    "messages": [{"role": "user", "content": self._build_task_input()}],
-                    "recent_files": list(self._recent_files),
-                    "conversation_history": list(self._conversation_history),
-                    "session_mode": self._mode,
-                    "current_task": self._task,
-                }
-                config = {"configurable": {"thread_id": self._session_id}}
-
-                if self.renderer and hasattr(self.renderer, "on_assistant_token"):
-                    await self._run_streaming(agent, initial, config, context=ctx)
-                else:
-                    await self._run_updates_only(agent, initial, config, context=ctx)
-
-                # Update conversation history
-                state = agent.get_state(config)
-                self._conversation_history = state.values.get("conversation_history", self._conversation_history)
-
-                if not self._model_changed:
-                    break
-                
-                self._model_changed = False
-                # Continue loop to re-create agent
-
-            await self._bus.publish(Event(
-                id=_new_ulid(),
-                session_id=self._session_id,
-                type=EventType.COMPLETED,
-                step=0,
-                status="done",
-                details="Task completed",
-            ))
+            await self._emit_lifecycle(EventType.COMPLETED, "Task completed")
 
         except Exception as e:
-            await self._bus.publish(Event(
-                id=_new_ulid(),
-                session_id=self._session_id,
-                type=EventType.FAILED,
-                step=0,
-                status="done",
-                details=f"Error: {e}",
-            ))
+            await self._emit_lifecycle(EventType.FAILED, f"Error: {e}")
             raise
+
+    async def _emit_lifecycle(self, event_type: EventType, detail: str) -> None:
+        """Publish a lifecycle event (SESSION_STARTED, COMPLETED, FAILED)."""
+        await self._bus.publish(Event(
+            id=_new_ulid(),
+            session_id=self._session_id,
+            type=event_type,
+            step=0,
+            status="in_progress" if event_type == EventType.SESSION_STARTED else "done",
+            details=detail,
+        ))
+
+    async def _run_with_model_switch_loop(self, memory_store: PersistentFileStore) -> None:
+        """Run the agent, re-creating it on model switch, until no more switches."""
+        while True:
+            agent = create_orchestrator(
+                self._settings,
+                workspace_root=self._workspace_root,
+                store=memory_store,
+            )
+
+            ctx = self._build_agent_context()
+            initial = self._build_initial_state()
+            config = {"configurable": {"thread_id": self._session_id}}
+
+            if self.renderer:
+                await self._run_streaming(agent, initial, config, context=ctx)
+            else:
+                await self._run_updates_only(agent, initial, config, context=ctx)
+
+            # Update conversation history from checkpointed state.
+            # This is best-effort — without a checkpointer, get_state fails gracefully.
+            try:
+                state = agent.get_state(config)
+                self._conversation_history = state.values.get(
+                    "conversation_history", self._conversation_history
+                )
+            except Exception:
+                pass
+
+            if not self._model_changed:
+                break
+            self._model_changed = False
+
+    def _build_agent_context(self) -> AgentContext:
+        """Build the runtime context for this invocation."""
+        return AgentContext(
+            mode=self._mode,
+            workspace_root=str(self._workspace_root),
+            session_id=self._session_id,
+            recent_files=list(self._recent_files),
+            conversation_history=list(self._conversation_history),
+            active_skills=list(self._active_skills),
+            preferences={"verbose": True},
+        )
+
+    def _build_initial_state(self) -> dict[str, Any]:
+        """Build the initial graph state for this invocation."""
+        return {
+            "messages": [{"role": "user", "content": self._build_task_input()}],
+            "recent_files": list(self._recent_files),
+            "conversation_history": list(self._conversation_history),
+            "session_mode": self._mode,
+            "current_task": self._task,
+        }
 
     def _build_task_input(self) -> str:
         """Prepend session carryover (recent files, prior successes) to the task."""
@@ -164,122 +186,105 @@ class RealAgent:
         return self._task + "\n\nRelevant session context:\n" + "\n".join(lines)
 
     async def _run_streaming(self, agent, initial, config, context=None) -> None:
-        """Stream tokens + tool calls + subagent activity via the v3 event-streaming protocol.
-
-        Uses ``stream_events(version="v3")`` which provides typed projections
-        for messages, subagents, and tool calls. The ``EventStreamAdapter``
-        bridges these projections to the ``EventBus`` for rendering and logging.
-        """
-        from pgimcode.events import EventStreamAdapter
-
+        """Stream tokens + tool calls + subagent activity via v3 event-streaming."""
         adapter = EventStreamAdapter(
             bus=self._bus,
             session_id=self._session_id,
             renderer=self.renderer,
         )
-
-        stream = await self._open_v3_event_stream(agent, initial, config, context=context)
-
-        # Consume the stream through the adapter (publishes events to the bus)
-        consume_task = asyncio.create_task(adapter.consume(stream))
-        while not consume_task.done():
-            if self._model_changed:
-                consume_task.cancel()
-                break
-            await asyncio.sleep(0.1)
-        try:
-            await consume_task
-        except asyncio.CancelledError:
-            pass
+        await self._consume_event_stream(agent, initial, config, adapter, context=context)
 
     async def _open_v3_event_stream(self, agent, initial, config, context=None):
-        """Open LangGraph's async v3 stream without leaking beta warnings to CLI."""
-        import warnings
-
-        from langchain_core._api import LangChainBetaWarning
-
+        """Open LangGraph's v3 async stream, suppressing beta warnings."""
         with warnings.catch_warnings():
             warnings.filterwarnings(
                 "ignore",
                 message="The v3 streaming protocol on Pregel is experimental.*",
                 category=LangChainBetaWarning,
             )
-            kwargs = {"version": "v3"}
+            kwargs: dict[str, Any] = {"version": "v3"}
             if context is not None:
                 kwargs["context"] = context
             return await agent.astream_events(initial, config=config, **kwargs)
 
-    def _message_text(self, msg) -> str:
+    @staticmethod
+    def _message_text(msg) -> str:
         """Extract plain text from a message's content (str or content-block list)."""
-        content = getattr(msg, "content", "") or ""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts = []
-            for block in content:
-                if isinstance(block, str):
-                    parts.append(block)
-                elif isinstance(block, dict) and block.get("type") == "text":
-                    parts.append(block.get("text", ""))
-            return "".join(parts)
-        return ""
+        return _extract_content_text(getattr(msg, "content", "") or "")
 
     def _render_message(
         self, msg, seen_tool_call_ids: set[str], seen_tool_result_ids: set[str]
     ) -> None:
         """Render a single agent message (assistant narration, tool-calls, or tool result)."""
+        if self._render_tool_calls(msg, seen_tool_call_ids):
+            return
+        if self._render_tool_result(msg, seen_tool_result_ids):
+            return
+        self._render_assistant_text(msg)
+
+    def _render_tool_calls(self, msg, seen_ids: set[str]) -> bool:
+        """Render tool-call messages. Returns True if msg was a tool-call."""
         tool_calls = getattr(msg, "tool_calls", None)
-        if tool_calls:
-            # Show the assistant's thinking/narration that precedes the tool calls
-            narration = self._message_text(msg).strip()
-            if narration and hasattr(self.renderer, "show_assistant_text"):
-                self.renderer.show_assistant_text(narration)
-            for tc in (tool_calls if isinstance(tool_calls, list) else [tool_calls]):
-                if isinstance(tc, dict):
-                    tc_id = tc.get("id") or ""
-                    name = tc.get("name", "?")
-                    args = tc.get("args", {}) or {}
-                else:
-                    tc_id = getattr(tc, "id", "") or ""
-                    name = getattr(tc, "name", "?")
-                    args = getattr(tc, "args", {}) or {}
-                if tc_id and tc_id in seen_tool_call_ids:
-                    continue
-                if tc_id:
-                    seen_tool_call_ids.add(tc_id)
-                self.renderer.on_tool_call(name, args)
-            return
+        if not tool_calls:
+            return False
 
-        role = getattr(msg, "role", "") or getattr(msg, "type", "")
-        if role == "tool":
-            tc_id = getattr(msg, "tool_call_id", "") or ""
-            if tc_id and tc_id in seen_tool_result_ids:
-                return
+        narration = self._message_text(msg).strip()
+        if narration and self.renderer:
+            self.renderer.show_assistant_text(narration)
+
+        for tc in (tool_calls if isinstance(tool_calls, list) else [tool_calls]):
+            if isinstance(tc, dict):
+                tc_id = tc.get("id") or ""
+                name = tc.get("name", "?")
+                args = tc.get("args", {}) or {}
+            else:
+                tc_id = getattr(tc, "id", "") or ""
+                name = getattr(tc, "name", "?")
+                args = getattr(tc, "args", {}) or {}
+            if tc_id and tc_id in seen_ids:
+                continue
             if tc_id:
-                seen_tool_result_ids.add(tc_id)
-            name = getattr(msg, "name", "") or "tool"
-            content = getattr(msg, "content", "") or ""
-            success = True
-            text = content if isinstance(content, str) else str(content)
-            try:
-                parsed = json.loads(text)
-                if isinstance(parsed, dict):
-                    if parsed.get("success") is False:
-                        success = False
-                    msg_text = parsed.get("message")
-                    if isinstance(msg_text, str) and msg_text:
-                        text = msg_text
-            except (ValueError, TypeError):
-                pass
-            self.renderer.on_tool_result(name, text, success=success)
-            return
+                seen_ids.add(tc_id)
+            self.renderer.on_tool_call(name, args)
+        return True
 
-        # Plain assistant message (no tool calls) — intermediate thinking/answer.
-        # Deduplicated by the renderer against text already streamed token-by-token.
-        if role in ("ai", "assistant"):
-            text = self._message_text(msg).strip()
-            if text and hasattr(self.renderer, "show_assistant_text"):
-                self.renderer.show_assistant_text(text)
+    def _render_tool_result(self, msg, seen_ids: set[str]) -> bool:
+        """Render tool-result messages. Returns True if msg was a tool result."""
+        role = getattr(msg, "role", "") or getattr(msg, "type", "")
+        if role != "tool":
+            return False
+
+        tc_id = getattr(msg, "tool_call_id", "") or ""
+        if tc_id and tc_id in seen_ids:
+            return True
+        if tc_id:
+            seen_ids.add(tc_id)
+
+        name = getattr(msg, "name", "") or "tool"
+        content = getattr(msg, "content", "") or ""
+        text = content if isinstance(content, str) else str(content)
+        success = True
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                if parsed.get("success") is False:
+                    success = False
+                msg_text = parsed.get("message")
+                if isinstance(msg_text, str) and msg_text:
+                    text = msg_text
+        except (ValueError, TypeError):
+            pass
+        self.renderer.on_tool_result(name, text, success=success)
+        return True
+
+    def _render_assistant_text(self, msg) -> None:
+        """Render plain assistant narration (no tool calls/results)."""
+        role = getattr(msg, "role", "") or getattr(msg, "type", "")
+        if role not in ("ai", "assistant"):
+            return
+        text = self._message_text(msg).strip()
+        if text and self.renderer:
+            self.renderer.show_assistant_text(text)
 
     def _extract_stream_text(self, msg_chunk, meta: dict | None) -> str | None:
         """Return only user-meaningful assistant narration, not tool payloads."""
@@ -291,20 +296,7 @@ class RealAgent:
         if getattr(msg_chunk, "tool_call_id", None) or getattr(msg_chunk, "name", None):
             return None
 
-        content = getattr(msg_chunk, "content", "") or ""
-        if isinstance(content, str):
-            text = content
-        elif isinstance(content, list):
-            parts = []
-            for item in content:
-                if isinstance(item, str):
-                    parts.append(item)
-                elif isinstance(item, dict) and item.get("type") == "text":
-                    parts.append(item.get("text", ""))
-            text = "".join(parts)
-        else:
-            return None
-
+        text = _extract_content_text(getattr(msg_chunk, "content", "") or "")
         stripped = text.strip()
         if not stripped:
             return None
@@ -315,17 +307,15 @@ class RealAgent:
         return text
 
     async def _run_updates_only(self, agent, initial, config, context=None) -> None:
-        """Legacy path: emit one event per node update via the bus (no renderer streaming).
-
-        Uses ``stream_events(version="v3")`` with the ``EventStreamAdapter``
-        to publish structured events even without a token-level renderer.
-        """
-        from pgimcode.events import EventStreamAdapter
-
+        """Legacy path: emit events via bus without token-level renderer."""
         adapter = EventStreamAdapter(bus=self._bus, session_id=self._session_id)
+        await self._consume_event_stream(agent, initial, config, adapter, context=context)
 
+    async def _consume_event_stream(
+        self, agent, initial, config, adapter: EventStreamAdapter, context=None,
+    ) -> None:
+        """Open the v3 stream and consume it via the adapter, respecting model switch."""
         stream = await self._open_v3_event_stream(agent, initial, config, context=context)
-        
         consume_task = asyncio.create_task(adapter.consume(stream))
         while not consume_task.done():
             if self._model_changed:
@@ -425,11 +415,7 @@ class RealAgent:
         ))
 
     async def _handle_model_switch(self) -> None:
-        from pgimcode.input_handler import ModelSelector
-
-        console = None
-        if self.renderer and hasattr(self.renderer, '_console'):
-            console = self.renderer._console
+        console = self.renderer._console if self.renderer else None
 
         if self.renderer:
             self.renderer.pause_live()

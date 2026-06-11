@@ -8,6 +8,7 @@ from enum import Enum
 
 class ModelProvider(str, Enum):
     DEEPSEEK = "deepseek"
+    DEEPINFRA = "deepinfra"
     GEMINI = "gemini"
 
 
@@ -20,6 +21,7 @@ class ModelInfo:
     description: str
     api_base_url: str
     pricing_note: str = ""
+    api_model_name: str = ""
 
 
 AVAILABLE_MODELS: dict[str, ModelInfo] = {
@@ -104,6 +106,17 @@ AVAILABLE_MODELS: dict[str, ModelInfo] = {
         api_base_url="https://api.deepseek.com/v1",
         pricing_note="Not published by official DeepSeek pricing",
     ),
+    # DeepInfra models (OpenAI-compatible inference API)
+    "nemotron-3-ultra-550b": ModelInfo(
+        id="nemotron-3-ultra-550b",
+        name="Nemotron 3 Ultra 550B",
+        provider=ModelProvider.DEEPINFRA,
+        context_window=128_000,
+        description="NVIDIA Nemotron 3 Ultra 550B served via DeepInfra. High-capacity reasoning and chat model.",
+        api_base_url="https://api.deepinfra.com/v1/openai",
+        pricing_note="DeepInfra pay-per-token; cost varies by plan",
+        api_model_name="nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B",
+    ),
     # Gemini models (Google AI via native Gemini API)
     "gemini-3.5-flash": ModelInfo(
         id="gemini-3.5-flash",
@@ -169,6 +182,7 @@ def get_default_model_for_provider(provider: ModelProvider) -> str:
     """Return the default model ID for a given provider."""
     defaults = {
         ModelProvider.DEEPSEEK: "deepseek-v4-flash",
+        ModelProvider.DEEPINFRA: "nemotron-3-ultra-550b",
         ModelProvider.GEMINI: "gemini-3.5-flash",
     }
     return defaults.get(provider, "deepseek-v4-flash")

@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     api_provider: str = "gemini"
     api_base_url: str | None = None
     deepseek_api_key: str | None = None
+    deepinfra_api_key: str | None = None
     gemini_api_key: str | None = None
 
     @model_validator(mode="after")
@@ -149,9 +150,11 @@ class Settings(BaseSettings):
         """Return any available API key, preferring the active provider."""
         if self.api_provider == "deepseek" and self.deepseek_api_key:
             return self.deepseek_api_key
+        if self.api_provider == "deepinfra" and self.deepinfra_api_key:
+            return self.deepinfra_api_key
         if self.api_provider == "gemini" and self.gemini_api_key:
             return self.gemini_api_key
-        return self.deepseek_api_key or self.gemini_api_key
+        return self.deepseek_api_key or self.deepinfra_api_key or self.gemini_api_key
 
     def resolve_provider(self) -> str:
         """Auto-detect the best provider based on available (non-placeholder) keys."""
@@ -161,14 +164,19 @@ class Settings(BaseSettings):
             return not key.endswith("-here") and len(key) > 20
 
         has_deepseek = _is_real(self.deepseek_api_key)
+        has_deepinfra = _is_real(self.deepinfra_api_key)
         has_gemini = _is_real(self.gemini_api_key)
 
         if self.api_provider == "deepseek" and has_deepseek:
             return "deepseek"
+        if self.api_provider == "deepinfra" and has_deepinfra:
+            return "deepinfra"
         if self.api_provider == "gemini" and has_gemini:
             return "gemini"
         if has_deepseek:
             return "deepseek"
+        if has_deepinfra:
+            return "deepinfra"
         if has_gemini:
             return "gemini"
         return self.api_provider

@@ -165,14 +165,23 @@ def _build_model(settings: "Settings", model_name: str):
     
     info = AVAILABLE_MODELS.get(model_name)
     provider = info.provider if info else ModelProvider.GEMINI
+    effective_model = info.api_model_name if (info and info.api_model_name) else model_name
     
     if provider == ModelProvider.DEEPSEEK:
-        llm_kwargs = dict(model=model_name, temperature=settings.llm_temperature)
+        llm_kwargs = dict(model=effective_model, temperature=settings.llm_temperature)
         if settings.deepseek_api_key:
             llm_kwargs["api_key"] = settings.deepseek_api_key
         llm_kwargs["base_url"] = (
             info.api_base_url if info and info.api_base_url else settings.api_base_url
         ) or "https://api.deepseek.com/v1"
+        return ChatOpenAI(**llm_kwargs)
+    elif provider == ModelProvider.DEEPINFRA:
+        llm_kwargs = dict(model=effective_model, temperature=settings.llm_temperature)
+        if settings.deepinfra_api_key:
+            llm_kwargs["api_key"] = settings.deepinfra_api_key
+        llm_kwargs["base_url"] = (
+            info.api_base_url if info and info.api_base_url else settings.api_base_url
+        ) or "https://api.deepinfra.com/v1/openai"
         return ChatOpenAI(**llm_kwargs)
     else:
         # Use the native Gemini integration. The OpenAI-compatible Gemini endpoint

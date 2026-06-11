@@ -4,31 +4,49 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
 from rich.table import Table
 
 from pgimcode import __app_name__, __version__
-from pgimcode.approval import ApprovalConfig, ApprovalGate
+from pgimcode.agent import RealAgent
+from pgimcode.approval import ApprovalGate
+from pgimcode.chat import ChatSession
+from pgimcode.cli_session import create_approval_gate
 from pgimcode.config import Settings
-from pgimcode.events import Event, EventBus, EventLogWriter, EventType
 from pgimcode.context import ContextManager
+from pgimcode.discovery.language_detector import annotate_languages
+from pgimcode.discovery.repo_map import RepoMap, build_repo_map
+from pgimcode.discovery.repo_scanner import RepoScanner
+from pgimcode.discovery.symbol_parser import SymbolParser
+from pgimcode.events import Event, EventBus, EventLogWriter, EventType
+from pgimcode.input_handler import ModelSelector, SlashCommandListener
 from pgimcode.mock_agent import MockAgent
-from pgimcode.observability import MetricsCollector, TraceRecorder, FailureSnapshot
+from pgimcode.models import (
+    AVAILABLE_MODELS,
+    ModelProvider,
+    get_models_by_provider,
+    resolve_model_info,
+)
+from pgimcode.observability import FailureSnapshot, MetricsCollector, TraceRecorder
 from pgimcode.planner import TaskPlanner
 from pgimcode.session import SessionStore
-from pgimcode.terminal import RichTerminalRenderer
-from pgimcode.tools.snapshot import SnapshotManager
-from pgimcode.tools.diff import DiffResult
-from pgimcode.tools.test_runner import run_tests
-from pgimcode.models import AVAILABLE_MODELS, ModelProvider, get_models_by_provider, resolve_model_info
-from pgimcode.chat import ChatSession
-from pgimcode.input_handler import SlashCommandListener, ModelSelector
 from pgimcode.skills import SkillManager
+from pgimcode.terminal import RichTerminalRenderer
+from pgimcode.tools.diff import DiffResult
+from pgimcode.tools.ranker import extract_keywords, rank_files_by_relevance
+from pgimcode.tools.read import read_file
+from pgimcode.tools.snapshot import SnapshotManager
+from pgimcode.tools.symbols import find_symbol
+from pgimcode.tools.test_runner import run_tests
+from pgimcode.verification import Verifier
 
 app = typer.Typer(no_args_is_help=False, add_completion=False, invoke_without_command=True)
 
@@ -44,8 +62,6 @@ def default_callback(
     if ctx.invoked_subcommand is not None:
         return
 
-    import asyncio
-
     settings = Settings()
 
     if model:
@@ -53,16 +69,12 @@ def default_callback(
 
     console = Console()
 
-    approval_config = ApprovalConfig(auto_approve_caution=auto_approve)
-    gate = ApprovalGate(config=approval_config, session_id="", bus=None, console=console)
-
-    if not auto_approve:
-        def prompt_user(action: str, details: str) -> bool:
-            console.print(f"\n[yellow]🛑 Approval required:[/] {action}")
-            console.print(f"[dim]{details}[/dim]")
-            answer = console.input("Approve? [y/N]: ").strip().lower()
-            return answer in ("y", "yes")
-        gate.prompt_fn = prompt_user
+    gate = create_approval_gate(
+        auto_approve=auto_approve,
+        session_id="",
+        bus=None,
+        console=console,
+    )
 
     chat = ChatSession(
         console=console,
@@ -200,12 +212,6 @@ def run(
 
         # Run the agent inside the renderer context
         with renderer:
-            # Create plan at the start (before agent runs)
-            from pgimcode.discovery.repo_scanner import RepoScanner
-            from pgimcode.discovery.language_detector import annotate_languages
-            from pgimcode.discovery.repo_map import build_repo_map
-            from pgimcode.tools.ranker import rank_files_by_relevance
-
             # Scan repo and rank files
             scanner = RepoScanner(root=Path("."))
             files = annotate_languages(scanner.scan())
@@ -237,18 +243,13 @@ def run(
                 return
 
             # Create approval gate
-            approval_config = ApprovalConfig(auto_approve_caution=auto_approve)
-            gate = ApprovalGate(config=approval_config, session_id=session_id, bus=bus, console=console)
-
-            # Set up interactive prompt if not auto-approve
-            if not auto_approve:
-                def prompt_user(action: str, details: str) -> bool:
-                    session_console = Console(no_color=no_color)
-                    session_console.print(f"\n[yellow]🛑 Approval required:[/] {action}")
-                    session_console.print(f"[dim]{details}[/dim]")
-                    answer = session_console.input("Approve? [y/N]: ").strip().lower()
-                    return answer in ("y", "yes")
-                gate.prompt_fn = prompt_user
+            gate = create_approval_gate(
+                auto_approve=auto_approve,
+                session_id=session_id,
+                bus=bus,
+                console=console,
+                no_color=no_color,
+            )
 
             # Create context manager
             context_manager = ContextManager(session_id=session_id)
@@ -265,7 +266,6 @@ def run(
                 slash_listener.start()
 
             if real:
-                from pgimcode.agent import RealAgent
                 agent = RealAgent(
                     bus, session_id, task,
                     approval_gate=gate,
@@ -341,7 +341,6 @@ def run(
                 # Handle --verify: run post-edit verification
                 if verify:
                     console.print("\n[bold]Running verification...[/]")
-                    from pgimcode.verification import Verifier
 
                     verifier = Verifier(Path("."))
                     # Determine changed files (for mock agent, use known paths)
@@ -349,7 +348,6 @@ def run(
                     for evt in renderer._events:
                         if evt.type == EventType.PATCH_APPLYING and evt.details:
                             # simplistic: extract file path from details
-                            import re
                             m = re.search(r"Edit:\s+(\S+)", evt.details)
                             if m:
                                 changed.append(Path(".") / m.group(1))
@@ -428,10 +426,6 @@ def analyze(
     max_symbol_files: int = typer.Option(10, "--max-symbol-files", help="Max files to parse symbols for"),
 ) -> None:
     """Analyze a repository and print its map."""
-    from pgimcode.discovery.repo_scanner import RepoScanner
-    from pgimcode.discovery.repo_map import build_repo_map, RepoMap
-    from pgimcode.discovery.symbol_parser import SymbolParser
-
     root = Path(path).resolve()
     if not root.exists():
         typer.echo(f"Error: path does not exist: {root}", err=True)
@@ -515,7 +509,6 @@ def analyze(
 
         # Print output
         if output == "json":
-            import json as _json
             data = {
                 "root": str(repo_map.root),
                 "languages": repo_map.languages,
@@ -529,7 +522,7 @@ def analyze(
                 "total_size": repo_map.total_size,
                 "top_dirs": repo_map.top_dirs,
             }
-            typer.echo(_json.dumps(data, indent=2))
+            typer.echo(json.dumps(data, indent=2))
         else:
             typer.echo(repo_map.to_markdown())
 
@@ -554,13 +547,6 @@ def plan(
     no_color: bool = typer.Option(False, "--no-color", help="Disable colors"),
 ) -> None:
     """Plan/analysis mode: scan repo, rank files, read top matches, show symbols, produce plan."""
-    from pgimcode.discovery.repo_scanner import RepoScanner
-    from pgimcode.discovery.language_detector import annotate_languages
-    from pgimcode.tools.ranker import rank_files_by_relevance
-    from pgimcode.tools.read import read_file
-    from pgimcode.tools.symbols import find_symbol
-    from pgimcode.discovery.symbol_parser import SymbolParser
-
     root = Path(path).resolve()
     if not root.exists():
         typer.echo(f"Error: path does not exist: {root}", err=True)
@@ -625,7 +611,6 @@ def plan(
             ranked = rank_files_by_relevance(task, files, root, max_results=max_files * 3)
 
             # Generate plan using TaskPlanner
-            from pgimcode.discovery.repo_map import build_repo_map
             repo_map = build_repo_map(scanner)
             planner = TaskPlanner(repo_map=repo_map, ranked_files=ranked)
             plan = planner.plan(task)
@@ -706,7 +691,6 @@ def plan(
         console.print(table)
 
         # Keywords found
-        from pgimcode.tools.ranker import extract_keywords
         keywords = extract_keywords(task)
         console.print(f"\n[bold]Keywords:[/] {', '.join(keywords)}")
 
@@ -744,12 +728,9 @@ def plan(
 
 @app.command(name="models")
 def list_models(
-    provider: str = typer.Option("all", "--provider", "-p", help="Filter by provider: deepseek, gemini, or all"),
+    provider: str = typer.Option("all", "--provider", "-p", help="Filter by provider: deepseek, deepinfra, gemini, or all"),
 ) -> None:
     """List all available AI models."""
-    from rich.console import Console
-    from rich.table import Table
-
     console = Console()
     settings = Settings()
     current_model = settings.model_name
@@ -775,7 +756,7 @@ def list_models(
             models = get_models_by_provider(prov)
         except ValueError:
             console.print(f"[red]Unknown provider: {provider}[/]")
-            console.print(f"[dim]Available: deepseek, gemini, all[/]")
+            console.print(f"[dim]Available: deepseek, deepinfra, gemini, all[/]")
             raise typer.Exit(code=1)
 
     current_prov = None
@@ -809,11 +790,6 @@ def skills_command(
     name: str | None = typer.Argument(None, help="Skill name (required for view/use/deactivate)"),
 ) -> None:
     """List, view, or activate coding skills."""
-    from rich.console import Console
-    from rich.table import Table
-    from rich.panel import Panel
-    from rich.markdown import Markdown
-
     console = Console()
     manager = SkillManager()
 
@@ -892,8 +868,6 @@ def chat_command(
     real: bool = typer.Option(False, "--real", help="Use real LLM agent (requires API key)"),
 ) -> None:
     """Start an interactive chat session (Claude Code-style UI)."""
-    import asyncio
-
     settings = Settings()
 
     if model:
@@ -904,16 +878,12 @@ def chat_command(
 
     console = Console()
 
-    approval_config = ApprovalConfig(auto_approve_caution=auto_approve)
-    gate = ApprovalGate(config=approval_config, session_id="", bus=None, console=console)
-
-    if not auto_approve:
-        def prompt_user(action: str, details: str) -> bool:
-            console.print(f"\n[yellow]🛑 Approval required:[/] {action}")
-            console.print(f"[dim]{details}[/dim]")
-            answer = console.input("Approve? [y/N]: ").strip().lower()
-            return answer in ("y", "yes")
-        gate.prompt_fn = prompt_user
+    gate = create_approval_gate(
+        auto_approve=auto_approve,
+        session_id="",
+        bus=None,
+        console=console,
+    )
 
     chat = ChatSession(
         console=console,

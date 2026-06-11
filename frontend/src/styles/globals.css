@@ -1,0 +1,103 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #334155 transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: #334155;
+    border-radius: 3px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: #475569;
+  }
+
+  body {
+    @apply bg-slate-950 text-slate-100;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+
+  ::selection {
+    @apply bg-indigo-500/30 text-white;
+  }
+}
+
+@layer components {
+  .glass {
+    @apply bg-slate-900/60 backdrop-blur-xl border border-slate-800/50;
+  }
+
+  .glass-card {
+    @apply bg-slate-800/50 backdrop-blur-sm border border-slate-700/30 rounded-xl
+           hover:border-slate-600/50 transition-all duration-200;
+  }
+
+  .btn-primary {
+    @apply bg-indigo-500 hover:bg-indigo-600 text-white font-medium
+           px-4 py-2 rounded-lg transition-all duration-200
+           active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed
+           disabled:hover:bg-indigo-500 disabled:active:scale-100;
+  }
+
+  .btn-secondary {
+    @apply bg-slate-700 hover:bg-slate-600 text-slate-200 font-medium
+           px-4 py-2 rounded-lg transition-all duration-200
+           active:scale-95 border border-slate-600;
+  }
+
+  .btn-danger {
+    @apply bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 font-medium
+           px-4 py-2 rounded-lg transition-all duration-200
+           active:scale-95 border border-rose-500/20 hover:border-rose-500/40;
+  }
+
+  .btn-ghost {
+    @apply hover:bg-slate-800 text-slate-400 hover:text-slate-200
+           px-3 py-1.5 rounded-lg transition-all duration-200;
+  }
+
+  .input-field {
+    @apply bg-slate-800 border border-slate-700 rounded-lg px-4 py-2.5
+           text-slate-100 placeholder-slate-500 w-full
+           focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30
+           transition-all duration-200;
+  }
+
+  .modal-backdrop {
+    @apply fixed inset-0 bg-black/60 backdrop-blur-sm z-50
+           flex items-center justify-center p-4;
+  }
+
+  .modal-panel {
+    @apply bg-slate-900 border border-slate-700/50 rounded-2xl
+           shadow-2xl shadow-black/40 w-full max-w-lg
+           animate-slide-in overflow-hidden;
+  }
+
+  .kanban-column {
+    @apply bg-slate-900/40 rounded-xl border border-slate-800/50
+           min-w-[280px] max-w-[320px] flex-shrink-0 flex flex-col;
+  }
+
+  .status-badge {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium;
+  }
+
+  .stream-text {
+    @apply font-mono text-sm text-slate-300 whitespace-pre-wrap leading-relaxed;
+  }
+}

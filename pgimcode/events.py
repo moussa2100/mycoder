@@ -148,9 +148,9 @@ class EventStreamAdapter:
         ``messages`` to completion before ``tool_calls`` can starve other
         channels and make the CLI look stuck after the first assistant message.
         """
-        from pgimcode.session import _new_ulid
-
         tasks: list[asyncio.Task] = []
+        # Lazy import to avoid circular dependency: session.py imports Event from this module
+        from pgimcode.session import _new_ulid
         if getattr(stream, "messages", None) is not None:
             tasks.append(asyncio.create_task(
                 self._consume_messages(getattr(stream, "messages"), _new_ulid)
