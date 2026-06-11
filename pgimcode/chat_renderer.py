@@ -49,6 +49,8 @@ class ChatRenderer:
         self._assistant_buffer = ""
         self._suppress_live_stream = False
         self._printed_texts: set[str] = set()
+        self._todo_timers: dict[str, float] = {}
+        self._todo_prev: dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -149,7 +151,7 @@ class ChatRenderer:
             self._stream_chars = 0
         elif content and not render_panel:
             self._print_assistant_header()
-            self._console.print(f"  {content}")
+            self._console.print(f"  {content}", markup=False)
 
         if render_panel and content:
             self._console.print(
@@ -184,8 +186,16 @@ class ChatRenderer:
         self._console.print(Markdown(content))
 
     def on_tool_call(self, name: str, args: dict | None = None) -> None:
-        """Render a tool-call panel with name + JSON arguments."""
+        """Render a tool-call panel with name + JSON arguments.
+
+        ``write_todos`` gets a special progress display with timer and icons.
+        """
         self.on_assistant_end()
+
+        if name == "write_todos" and args:
+            self._render_write_todos(args)
+            return
+
         try:
             args_str = _json.dumps(
                 self._compact_tool_args(args or {}),
@@ -215,7 +225,12 @@ class ChatRenderer:
     def on_tool_result(
         self, name: str, content: str, success: bool = True, max_chars: int = 600
     ) -> None:
-        """Render a tool-result panel; truncates long output with a hint."""
+        """Render a tool-result panel; truncates long output with a hint.
+
+        Skips ``write_todos`` — its progress panel already shows the state.
+        """
+        if name == "write_todos":
+            return
         self.on_assistant_end()
         text = "" if content is None else str(content)
         truncated_n = 0
@@ -262,6 +277,7 @@ class ChatRenderer:
                 "[bold cyan]/help[/]      Show this help\n"
                 "[bold cyan]/clear[/]     Clear the screen\n"
                 "[bold cyan]/sessions[/]  List saved sessions\n"
+                "[bold cyan]/history[/]   Show turn history for this chat session\n"
                 "[bold cyan]/plan[/]      Toggle plan-only mode\n",
                 border_style="cyan",
                 padding=(1, 2),
@@ -316,6 +332,67 @@ class ChatRenderer:
         if event.status in ("in_progress", "started"):
             return "yellow"
         return "white"
+
+    def _render_write_todos(self, args: dict) -> None:
+        """Render ``write_todos`` as a rich progress panel.
+
+        Shows each todo with a status icon (⏳/✓/○), an "In progress…" label
+        for the active item, and an elapsed timer (m:ss) since the turn began.
+        """
+        todos = args.get("todos", [])
+        now = time.time()
+        elapsed = int(now - self._turn_start) if self._turn_start else 0
+        mins, secs = divmod(elapsed, 60)
+        timer_str = f"[{mins}m {secs}s]" if mins else f"[{secs}s]"
+
+        lines: list[str] = []
+        active_found = False
+        for todo in todos:
+            # content may be nested inside compacted form
+            content = todo.get("content")
+            if not isinstance(content, str) or not content:
+                content = todo.get("content_summary", "?")
+            status = todo.get("status", "pending")
+
+            idx = content  # use content as identity key
+            if status == "completed":
+                icon = "✓"
+                style = "green"
+                # report elapsed time for freshly-completed items
+                extra = ""
+                if idx in self._todo_timers:
+                    dt = int(now - self._todo_timers.pop(idx))
+                    dm, ds = divmod(dt, 60)
+                    extra = f"  [dim](in {dm}m {ds}s)[/]" if dm else f"  [dim](in {ds}s)[/]"
+                lines.append(f"  [{style}]{icon}[/] [green]{content}[/]{extra}")
+            elif status == "in_progress":
+                icon = "◌"
+                style = "bold yellow"
+                active_found = True
+                if idx not in self._todo_timers:
+                    self._todo_timers[idx] = now
+                lines.append(f"  [{style}]{icon}[/] [bold yellow]{content}[/]")
+            else:  # pending
+                icon = "○"
+                style = "dim"
+                lines.append(f"  [{style}]{icon}[/] [dim]{content}[/]")
+
+        # Build header
+        header = "[bold cyan]◷  Progress[/]"
+        if active_found:
+            header += "  [bold yellow]In progress…[/]"
+        header += f"  [dim]{timer_str}[/]"
+
+        body = "\n".join(lines) if lines else "[dim]No tasks[/]"
+        self._console.print(
+            Panel(
+                body,
+                title=header,
+                title_align="left",
+                border_style="cyan",
+                padding=(1, 2),
+            )
+        )
 
     def _compact_tool_args(self, value: object) -> object:
         """Hide large blobs like file contents from tool-call panels."""

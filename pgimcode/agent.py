@@ -54,6 +54,7 @@ class RealAgent:
         recent_files: list[str] | None = None,
         conversation_history: list[tuple[str, bool]] | None = None,
         active_skills: list[str] | None = None,
+        checkpointer: object | None = None,
     ):
         self._bus = bus
         self._session_id = session_id
@@ -70,6 +71,7 @@ class RealAgent:
         self._active_skills = active_skills or []
         self._workspace_root = self._resolve_root()
         self._model_changed = False
+        self._checkpointer = checkpointer
 
     def _on_model_switched(self, event: Event) -> None:
         if event.type == EventType.MODEL_SWITCHED:
@@ -112,6 +114,7 @@ class RealAgent:
                 self._settings,
                 workspace_root=self._workspace_root,
                 store=memory_store,
+                checkpointer=self._checkpointer,
             )
 
             ctx = self._build_agent_context()

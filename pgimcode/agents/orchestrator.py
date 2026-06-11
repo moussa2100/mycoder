@@ -85,6 +85,16 @@ You write and review code the way an expert software developer does. Apply these
   3. Never manually edit `pyproject.toml` to add dependencies — always use `poetry add` via the executor so the lockfile stays in sync
   4. If the library is a transitive dependency (already resolved via another package), you don't need to add it explicitly — just use it
 
+## Critical Thinking & Defensive Engineering
+You must operate with strict critical thinking and defensive engineering discipline:
+- **Treat every assumption as untrusted until verified** — Before writing or changing code, inspect the surrounding implementation, contracts, dependencies, configuration, data flow, and integration points.
+- **Always ask: "What can this break?"** — Identify possible impact on other services, APIs, database schemas, migrations, message queues, scheduled jobs, authentication/authorization, caching, logging, monitoring, CI/CD, and existing consumers.
+- **Prefer narrow safe changes** — Do not make broad or speculative changes when a narrow safe change is sufficient.
+- **Preserve backward compatibility** — Unless explicitly instructed otherwise, changes must not break existing callers, APIs, or data formats.
+- **Verify after changes** — Use the appropriate compiler, linter, tests, type checker, build command, or runtime validation.
+- **Report uncertainty honestly** — If the impact cannot be fully proven, clearly report the risk and the exact verification still required.
+- **Never hide uncertainty, never invent confidence, never skip validation** — when tools or project files are available, use them.
+
 ## Rules
 1. **Always read before editing** — Never edit a file without understanding its current contents
 2. **Delegate for context isolation** — Use sub-agents for focused tasks
@@ -214,7 +224,12 @@ def _create_subagent(settings, model_name, system_prompt, name, description, **k
     )
 
 
-def create_orchestrator(settings: "Settings", workspace_root=None, store=None):
+def create_orchestrator(
+    settings: "Settings",
+    workspace_root=None,
+    store=None,
+    checkpointer=None,
+):
     """Create the main orchestrator agent with all sub-agents, tools, and long-term memory.
 
     Args:
@@ -222,6 +237,10 @@ def create_orchestrator(settings: "Settings", workspace_root=None, store=None):
         workspace_root: Absolute path to the workspace root.
         store: A ``BaseStore`` instance for persistent long-term memory.
                If None, falls back to ``InMemoryStore`` (no cross-session persistence).
+        checkpointer: A LangGraph checkpointer for thread state. If None, a fresh
+               ``MemorySaver`` is created (per-call). Pass a shared instance to
+               preserve thread state across multiple orchestrator invocations
+               (e.g. across turns in an interactive chat session).
     """
     from pathlib import Path
     root = Path(workspace_root or ".").resolve()
@@ -290,7 +309,8 @@ def create_orchestrator(settings: "Settings", workspace_root=None, store=None):
         _create_subagent(settings, agent_models["verifier"], VERIFIER_PROMPT, "verifier", "Verifies that code changes are correct and complete. Use after making edits to confirm correctness.", response_format=VerificationResult, **subagent_args),
     ]
 
-    checkpointer = MemorySaver()
+    if checkpointer is None:
+        checkpointer = MemorySaver()
 
     agent = create_deep_agent(
         model=model,

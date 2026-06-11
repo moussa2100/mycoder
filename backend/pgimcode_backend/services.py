@@ -1,23 +1,27 @@
 """Services that wrap pgimcode's RealAgent for the API layer.
 
-Each service function handles a specific agent interaction:
-- generate_plan: analyze a task request and produce a structured plan
-- execute_task: run a task from its plan and stream results
-- chat: conversational interaction with the agent
+Each function creates a real pgimcode session (SessionStore + EventLogWriter)
+so that sessions started via the API show up in the CLI `/sessions` listing.
+
+The agent's coordinator messages are captured from the EventBus and exposed
+either as a single string (generate_plan) or as an async chunk stream
+(execute_task_stream, chat_stream).
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator
+from datetime import datetime, timezone
 
 from pgimcode.agent import RealAgent
 from pgimcode.config import Settings
-from pgimcode.events import EventBus
-from pgimcode.session import _new_ulid
+from pgimcode.events import Event, EventBus, EventLogWriter, EventType
+from pgimcode.session import SessionStore
 
-# Reusable settings instance (reads from .env in project root)
 _settings: Settings | None = None
+_SENTINEL = object()
 
 
 def _get_settings() -> Settings:
@@ -27,27 +31,102 @@ def _get_settings() -> Settings:
     return _settings
 
 
-def _build_agent(
-    task: str,
-    workspace_root: str,
-    mode: str = "build",
-) -> RealAgent:
-    """Create a RealAgent instance ready to run."""
-    settings = _get_settings()
-    session_id = _new_ulid()
-    bus = EventBus(session_id=session_id)
+def _make_session(task: str, mode: str = "build"):
+    """Create + persist a Session and return (store, session, log_writer, bus)."""
+    store = SessionStore()
+    session = store.create(task=task, mode=mode)
+    store.save(session)
+    bus = EventBus()
+    log_writer = EventLogWriter(store.jsonl_path(session.id))
 
+    async def _log(event: Event) -> None:
+        await log_writer.write(event)
+
+    bus.subscribe(_log)
+    return store, session, bus
+
+
+def _finalize(store: SessionStore, session, step_count: int, failed: bool = False) -> None:
+    session.status = "failed" if failed else "completed"
+    session.completed_at = datetime.now(timezone.utc)
+    session.step_count = step_count
+    try:
+        store.update(session)
+    except Exception:
+        pass
+
+
+def _build_agent(bus: EventBus, session_id: str, task: str, mode: str) -> RealAgent:
     return RealAgent(
         bus=bus,
         session_id=session_id,
         task=task,
         mode=mode,
-        settings=settings,
-        renderer=None,  # No terminal renderer in API mode
+        settings=_get_settings(),
+        renderer=None,
         recent_files=[],
         conversation_history=[],
     )
 
+
+def _chdir_guard(workspace_dir: str | None):
+    """Context-manager-ish helper: chdir into workspace_dir, return prior cwd."""
+    prior = os.getcwd()
+    if workspace_dir and os.path.isdir(workspace_dir):
+        os.chdir(workspace_dir)
+    return prior
+
+
+async def _run_collecting(agent: RealAgent, bus: EventBus) -> str:
+    """Run the agent and concatenate every COORDINATOR_MESSAGE event into one string."""
+    chunks: list[str] = []
+
+    def _capture(event: Event) -> None:
+        if event.type in (EventType.COORDINATOR_MESSAGE, EventType.SUBAGENT_MESSAGE):
+            if event.details:
+                chunks.append(event.details)
+
+    bus.subscribe(_capture)
+    await agent.run()
+    return "\n".join(c for c in chunks if c).strip()
+
+
+async def _run_streaming(
+    agent: RealAgent, bus: EventBus
+) -> AsyncIterator[str]:
+    """Run the agent and yield COORDINATOR_MESSAGE chunks as they arrive."""
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def _capture(event: Event) -> None:
+        if event.type in (EventType.COORDINATOR_MESSAGE, EventType.SUBAGENT_MESSAGE):
+            if event.details:
+                await queue.put(event.details)
+
+    bus.subscribe(_capture)
+
+    async def _drive() -> None:
+        try:
+            await agent.run()
+        finally:
+            await queue.put(_SENTINEL)
+
+    task = asyncio.create_task(_drive())
+    try:
+        while True:
+            item = await queue.get()
+            if item is _SENTINEL:
+                break
+            yield item
+    finally:
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
+# ── generate_plan ─────────────────────────────────────────────
 
 async def generate_plan(
     title: str,
@@ -56,44 +135,35 @@ async def generate_plan(
     feedback: str | None = None,
     current_plan: str | None = None,
 ) -> str:
-    """Generate a plan for a task using the LLM agent.
-
-    Returns the plan content as a markdown string.
-    """
     if feedback and current_plan:
-        prompt = f"""You are a task planning assistant. The user has provided feedback on a plan and wants it modified.
-
-Original task: {title}
-Description: {description or 'No description'}
-
-Current plan:
-{current_plan}
-
-User feedback: {feedback}
-
-Please revise the plan based on the feedback. Keep the same structure but incorporate the changes requested."""
+        prompt = (
+            f"You are a task planning assistant. Revise the plan based on the user's feedback.\n\n"
+            f"Task: {title}\nDescription: {description or 'None'}\n\n"
+            f"Current plan:\n{current_plan}\n\nUser feedback: {feedback}\n\n"
+            f"Return the revised plan in clear markdown."
+        )
     else:
-        prompt = f"""You are a task planning assistant. Analyze this task request and create a structured, actionable plan.
+        prompt = (
+            f"You are a task planning assistant. Produce a structured, actionable plan.\n\n"
+            f"Task Title: {title}\nDescription: {description or 'None'}\n\n"
+            f"Provide: 1) summary, 2) numbered steps, 3) risks, 4) complexity (Low/Med/High).\n"
+            f"Return concise markdown only."
+        )
 
-Task Title: {title}
-Description: {description or 'No description provided'}
-
-Provide:
-1. A summary of what needs to be done
-2. Key steps in order (numbered)
-3. Potential challenges and considerations
-4. Estimated complexity (Low/Medium/High)
-
-Format the response in clear markdown. Keep it concise and actionable."""
-
+    store, session, bus = _make_session(task=f"plan: {title}", mode="plan")
+    failed = False
     try:
-        agent = _build_agent(task=prompt, workspace_root="/", mode="plan")
-        # Run agent synchronously in a thread to avoid blocking
-        result = await asyncio.to_thread(agent.run)
-        return result or "Plan generated successfully."
+        agent = _build_agent(bus, session.id, prompt, mode="plan")
+        result = await _run_collecting(agent, bus)
+        return result or "Plan generated."
     except Exception as e:
-        return f"## Plan Generation Error\n\nAn error occurred: {str(e)}\n\nPlease check your API keys and try again."
+        failed = True
+        return f"## Plan Generation Error\n\n{e}"
+    finally:
+        _finalize(store, session, step_count=1, failed=failed)
 
+
+# ── execute_task_stream ───────────────────────────────────────
 
 async def execute_task_stream(
     task_id: str,
@@ -102,54 +172,47 @@ async def execute_task_stream(
     model: str,
     workspace_dir: str,
 ) -> AsyncIterator[str]:
-    """Execute a task and yield streaming output chunks.
-
-    This is a generator that yields SSE-formatted text chunks
-    as the agent executes the task.
-    """
-    prompt = f"""Execute the following task based on the plan.
-
-Task: {task_title}
-
-Plan:
-{task_plan}
-
-Work in the workspace directory and complete the implementation.
-Report your progress step by step."""
-
+    prompt = (
+        f"Execute this task based on the plan.\n\n"
+        f"Task: {task_title}\n\nPlan:\n{task_plan}\n\n"
+        f"Report progress step by step."
+    )
+    store, session, bus = _make_session(task=f"execute: {task_title}", mode="build")
+    prior_cwd = _chdir_guard(workspace_dir)
+    failed = False
+    step = 0
     try:
-        agent = _build_agent(
-            task=prompt,
-            workspace_root=workspace_dir or ".",
-            mode="build",
-        )
-        # In a real implementation, we'd stream from the agent's event bus
-        # For now, we run the agent and yield results
-        result = await asyncio.to_thread(agent.run)
-        yield result or "Task execution completed."
+        agent = _build_agent(bus, session.id, prompt, mode="build")
+        async for chunk in _run_streaming(agent, bus):
+            step += 1
+            yield chunk
     except Exception as e:
-        yield f"\n## Execution Error\n\n{str(e)}"
+        failed = True
+        yield f"\n## Execution Error\n\n{e}"
+    finally:
+        os.chdir(prior_cwd)
+        _finalize(store, session, step_count=step, failed=failed)
 
+
+# ── chat_stream ───────────────────────────────────────────────
 
 async def chat_stream(
     message: str,
     model: str,
     workspace_dir: str,
 ) -> AsyncIterator[str]:
-    """Chat with the agent and yield streaming response chunks."""
-    prompt = f"""You are pgimcode, a terminal AI coding assistant. 
-
-The user says: {message}
-
-Respond helpfully and concisely. If they're asking about code, reference 
-the workspace directory context as needed."""
+    store, session, bus = _make_session(task=message[:200], mode="build")
+    prior_cwd = _chdir_guard(workspace_dir)
+    failed = False
+    step = 0
     try:
-        agent = _build_agent(
-            task=prompt,
-            workspace_root=workspace_dir or ".",
-            mode="build",
-        )
-        result = await asyncio.to_thread(agent.run)
-        yield result or "I processed your message."
+        agent = _build_agent(bus, session.id, message, mode="build")
+        async for chunk in _run_streaming(agent, bus):
+            step += 1
+            yield chunk
     except Exception as e:
-        yield f"Error: {str(e)}"
+        failed = True
+        yield f"Error: {e}"
+    finally:
+        os.chdir(prior_cwd)
+        _finalize(store, session, step_count=step, failed=failed)

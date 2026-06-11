@@ -13,18 +13,20 @@ from __future__ import annotations
 
 import sys
 import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import FuzzyWordCompleter
 from prompt_toolkit.shortcuts import CompleteStyle
 from rich.console import Console
+from rich.markup import escape as _escape_markup
 from rich.panel import Panel
 from rich.table import Table
 
 from pgimcode.chat_renderer import ChatRenderer
 from pgimcode.config import Settings
-from pgimcode.events import Event, EventBus, EventType
+from pgimcode.events import Event, EventBus, EventLogWriter, EventType
 from pgimcode.skills import SkillManager
 
 if TYPE_CHECKING:
@@ -104,6 +106,7 @@ class ChatSession:
         "/quit", "/q",
         "/clear",
         "/sessions",
+        "/history",
         "/plan",
         "/skills",
         "/skills list",
@@ -129,6 +132,7 @@ class ChatSession:
         self._running: bool = False
         self._context_manager = None
         self._renderer: ChatRenderer | None = None
+        self._checkpointer = None  # LangGraph MemorySaver shared across turns
 
         # Per-session accumulators.
         self._history: list[tuple[str, bool]] = []           # (task, success)
@@ -150,12 +154,18 @@ class ChatSession:
 
     async def start(self) -> None:
         """Start the interactive chat loop.  Blocks until the user quits."""
+        from langgraph.checkpoint.memory import MemorySaver
+
         from pgimcode.context import ContextManager
         from pgimcode.session import SessionStore
 
         store = SessionStore()
         session = store.create(task="Chat session", mode="build")
+        store.save(session)
         self._session_id = session.id
+
+        # Shared LangGraph checkpointer so thread state survives across chat turns.
+        self._checkpointer = MemorySaver()
 
         self._context_manager = ContextManager(session_id=self._session_id)
         self._renderer = ChatRenderer(
@@ -168,43 +178,65 @@ class ChatSession:
         bus = EventBus()
         self._wire_event_bus(bus)
 
+        # Persist every event to <session_id>.jsonl for this chat session.
+        log_writer = EventLogWriter(store.jsonl_path(session.id))
+
+        async def _log_event(event: Event) -> None:
+            await log_writer.write(event)
+
+        bus.subscribe(_log_event)
+
         self._running = True
 
         prompt_session = self._build_prompt_session()
         is_tty = sys.stdin.isatty()
 
-        while self._running:
-            try:
-                raw = await self._read_input(prompt_session, is_tty)
-            except (EOFError, KeyboardInterrupt):
-                break
+        try:
+            while self._running:
+                try:
+                    raw = await self._read_input(prompt_session, is_tty)
+                except (EOFError, KeyboardInterrupt):
+                    break
 
-            # Drain any extra lines (pastes on terminals without bracketed paste).
-            extra = _drain_pending_input() if is_tty else ""
-            if extra:
-                for cont in extra.splitlines():
-                    self._console.print(f"  [bold bright_white]>[/] {cont}")
-                raw = f"{raw}\n{extra}"
+                # Drain any extra lines (pastes on terminals without bracketed paste).
+                extra = _drain_pending_input() if is_tty else ""
+                if extra:
+                    for cont in extra.splitlines():
+                        self._console.print(
+                            f"  [bold bright_white]>[/] {_escape_markup(cont)}"
+                        )
+                    raw = f"{raw}\n{extra}"
 
-            line = raw.strip()
-            if not line:
-                continue
+                line = raw.strip()
+                if not line:
+                    continue
 
-            # Slash commands: single-line only.
-            if line.startswith("/") and "\n" not in line:
-                await self._handle_slash_command(line, store, bus)
-                continue
+                # Slash commands: single-line only.
+                if line.startswith("/") and "\n" not in line:
+                    await self._handle_slash_command(line, store, bus)
+                    continue
 
-            # Process as a coding / general task.
-            self._renderer.start_turn(line)
-            success = False
-            try:
-                success = await self._process_task(line, bus)
+                # Process as a coding / general task.
+                self._renderer.start_turn(line)
+                success = False
+                try:
+                    success = await self._process_task(line, bus)
+                except Exception as exc:
+                    self._console.print(
+                        f"  FAIL [red]Error: {_escape_markup(str(exc))}[/red]"
+                    )
                 self._history.append((line, success))
-            except Exception as exc:
-                self._console.print(f"  FAIL [red]Error: {exc}[/red]")
 
-            self._renderer.end_turn(success)
+                self._renderer.end_turn(success)
+        finally:
+            # Finalize session metadata so /sessions and resume see a clean record.
+            session.status = "completed"
+            session.completed_at = datetime.now(timezone.utc)
+            session.step_count = len(self._history)
+            try:
+                store.update(session)
+            except Exception:
+                pass
 
         self._console.print()
         self._console.print("[dim]Goodbye![/]")
@@ -235,6 +267,7 @@ class ChatSession:
                 recent_files=list(self._recent_changed_files),
                 conversation_history=list(self._history),
                 active_skills=list(self._active_skills),
+                checkpointer=self._checkpointer,
             )
             try:
                 await agent.run()
@@ -403,6 +436,20 @@ class ChatSession:
             self._console.print(table)
             return
 
+        if cmd == "/history":
+            if not self._history:
+                self._console.print("  [dim]No turns yet in this chat session.[/]")
+                return
+            table = Table(title=f"Turn history ({self._session_id})")
+            table.add_column("#", style="dim", justify="right", width=3)
+            table.add_column("Status", width=6)
+            table.add_column("Task", style="white", overflow="fold")
+            for i, (task, ok) in enumerate(self._history, 1):
+                status = "[green]OK[/]" if ok else "[red]FAIL[/]"
+                table.add_row(str(i), status, _escape_markup(task))
+            self._console.print(table)
+            return
+
         if cmd == "/plan":
             self._plan_only = not self._plan_only
             state = "[green]ON[/]" if self._plan_only else "[dim]OFF[/]"
@@ -452,7 +499,7 @@ class ChatSession:
                 )
                 return
         except ValueError as exc:
-            self._console.print(f"  [red]{exc}[/red]")
+            self._console.print(f"  [red]{_escape_markup(str(exc))}[/red]")
             return
 
         self._console.print(

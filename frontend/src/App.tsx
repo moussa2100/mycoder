@@ -53,6 +53,18 @@ export default function App() {
     }
   };
 
+  const handleBrowse = async () => {
+    if (!window.electronAPI?.selectWorkspace) return;
+    const dir = await window.electronAPI.selectWorkspace();
+    if (!dir) return;
+    setDirInput(dir);
+    setWorkspaceDir(dir);
+    setWsValid('valid');
+    setTimeout(() => setWsValid(null), 2000);
+  };
+
+  const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
+
   return (
     <div className="flex h-screen w-screen overflow-hidden bg-slate-950">
       <Sidebar />
@@ -68,6 +80,15 @@ export default function App() {
             placeholder="Working directory path..."
             className="flex-1 bg-slate-800/50 border border-slate-700/50 rounded-lg px-3 py-1.5 text-sm text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/20 transition-all"
           />
+          {isElectron && (
+            <button
+              onClick={handleBrowse}
+              className="px-3 py-1.5 rounded-lg bg-slate-800/60 border border-slate-700/50 text-slate-300 text-xs font-medium hover:bg-slate-700/60 transition-all flex items-center gap-1.5"
+              title="Browse for a folder"
+            >
+              <FolderOpen size={12} /> Browse…
+            </button>
+          )}
           <button
             onClick={handleDirSubmit}
             className="px-3 py-1.5 rounded-lg bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 text-xs font-medium hover:bg-indigo-500/20 transition-all"
