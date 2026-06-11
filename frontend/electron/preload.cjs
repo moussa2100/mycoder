@@ -12,4 +12,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getChatMessages: () => ipcRenderer.invoke('chat:getAll'),
   addChatMessage: (msg) => ipcRenderer.invoke('chat:add', msg),
   clearChat: () => ipcRenderer.invoke('chat:clear'),
+
+  // Workspace
+  getWorkspace: () => ipcRenderer.invoke('workspace:get'),
+  setWorkspace: (dir) => ipcRenderer.invoke('workspace:set', dir),
+  selectWorkspace: () => ipcRenderer.invoke('workspace:select'),
 });

@@ -5,6 +5,7 @@ export interface Task {
   status: TaskStatus;
   model: string;
   plan: string;
+  plan_conversation: string;
   stream_response: string;
   created_at: string;
   updated_at: string;
@@ -47,6 +48,9 @@ export interface ElectronAPI {
   getChatMessages: () => Promise<ChatMessage[]>;
   addChatMessage: (msg: ChatMessage) => Promise<ChatMessage>;
   clearChat: () => Promise<{ success: boolean }>;
+  getWorkspace: () => Promise<string>;
+  setWorkspace: (dir: string) => Promise<{ success: boolean }>;
+  selectWorkspace: () => Promise<string>;
 }
 
 declare global {

@@ -28,6 +28,10 @@ export default function KanbanCard({ task }: Props) {
       updated_at: new Date().toISOString(),
     };
     updateTask(updated);
+    try {
+      const { updateTask: apiUpdate } = await import('@/services/api');
+      await apiUpdate(task.id, updated);
+    } catch { /* fallback */ }
     await saveTaskToDB(updated);
     setShowMenu(false);
   };
@@ -38,6 +42,10 @@ export default function KanbanCard({ task }: Props) {
       return;
     }
     removeTask(task.id);
+    try {
+      const { deleteTask: apiDelete } = await import('@/services/api');
+      await apiDelete(task.id);
+    } catch { /* fallback */ }
     await deleteTaskFromDB(task.id);
     setShowMenu(false);
     setShowStopConfirm(false);

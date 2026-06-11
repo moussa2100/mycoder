@@ -39,20 +39,39 @@ export default function ChatPanel() {
     setInput('');
     setIsLoading(true);
 
-    // Simulate LLM response
+    // Try real API
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: userMsg.content, model }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const assistantMsg: ChatMessage = {
+          id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36),
+          role: 'assistant',
+          content: data.response,
+          model,
+          created_at: new Date().toISOString(),
+        };
+        addChatMessage(assistantMsg);
+        await saveChatToDB(assistantMsg);
+        setIsLoading(false);
+        return;
+      }
+    } catch { /* fallback */ }
+
+    // Fallback: simulate LLM response
     await new Promise((r) => setTimeout(r, 800 + Math.random() * 1200));
     const assistantMsg: ChatMessage = {
       id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36),
       role: 'assistant',
-      content: `Here's my response to your message about "${userMsg.content.slice(0, 50)}${userMsg.content.length > 50 ? '...' : ''}".
+      content: `Here's my response about "${userMsg.content.slice(0, 50)}${userMsg.content.length > 50 ? '...' : ''}".
 
-I understand what you're asking. Here's my analysis:
-
-1. **Key points** — This involves several important considerations that should be addressed systematically.
-2. **Approach** — I recommend a structured approach, breaking down the task into manageable steps.
-3. **Next steps** — Let me know if you'd like me to elaborate on any specific aspect or create a detailed plan.
-
-Feel free to provide more context or ask follow-up questions!`,
+1. **Key points** — Several important considerations should be addressed.
+2. **Approach** — A structured approach would work best here.
+3. **Next steps** — Let me know if you'd like me to elaborate.`,
       model,
       created_at: new Date().toISOString(),
     };

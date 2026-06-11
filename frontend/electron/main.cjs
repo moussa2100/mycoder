@@ -1,20 +1,41 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
 let mainWindow = null;
 
-// Simple JSON file-based storage (swap to SQLite when backend is ready)
+// JSON file-based storage with task migration
 function getDbPath() {
   return path.join(app.getPath('userData'), 'pgimcode-data.json');
+}
+
+function migrateTask(task) {
+  return {
+    id: task.id,
+    title: task.title || '',
+    description: task.description || '',
+    status: task.status || 'planning',
+    model: task.model || 'gemini-3.5-flash',
+    plan: task.plan || '',
+    plan_conversation: task.plan_conversation || '',
+    stream_response: task.stream_response || '',
+    created_at: task.created_at || new Date().toISOString(),
+    updated_at: task.updated_at || new Date().toISOString(),
+    position: typeof task.position === 'number' ? task.position : 0,
+  };
 }
 
 function readData() {
   try {
     const raw = fs.readFileSync(getDbPath(), 'utf-8');
-    return JSON.parse(raw);
+    const data = JSON.parse(raw);
+    return {
+      tasks: (data.tasks || []).map(migrateTask),
+      chat_messages: data.chat_messages || [],
+      workspace_dir: data.workspace_dir || '',
+    };
   } catch {
-    return { tasks: [], chat_messages: [] };
+    return { tasks: [], chat_messages: [], workspace_dir: '' };
   }
 }
 
@@ -101,6 +122,32 @@ ipcMain.handle('chat:clear', () => {
   data.chat_messages = [];
   writeData(data);
   return { success: true };
+});
+
+// IPC Handlers - Workspace
+ipcMain.handle('workspace:get', () => {
+  const data = readData();
+  return data.workspace_dir || '';
+});
+
+ipcMain.handle('workspace:set', (_event, dir) => {
+  const data = readData();
+  data.workspace_dir = dir;
+  writeData(data);
+  return { success: true };
+});
+
+ipcMain.handle('workspace:select', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory'],
+    title: 'Select Working Directory',
+  });
+  if (result.canceled) return '';
+  const dir = result.filePaths[0];
+  const data = readData();
+  data.workspace_dir = dir;
+  writeData(data);
+  return dir;
 });
 
 app.whenReady().then(() => {

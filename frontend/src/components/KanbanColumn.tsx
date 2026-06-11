@@ -42,6 +42,10 @@ export default function KanbanColumn({ status, title, color, icon, tasks }: Prop
       updated_at: new Date().toISOString(),
     };
     updateTask(updated);
+    try {
+      const { updateTask: apiUpdate } = await import('@/services/api');
+      await apiUpdate(updated.id, updated);
+    } catch { /* fallback */ }
     await saveTaskToDB(updated);
   };
 

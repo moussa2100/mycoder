@@ -32,6 +32,11 @@ def _accumulate_history(
     return result[-20:]
 
 
+def _latest(current: str, new: str) -> str:
+    """Reducer that picks the latest (non-empty) value."""
+    return new if new else current
+
+
 class PgimcodeState(DeepAgentState):
     """Custom state for pgimcode agent sessions.
 
@@ -43,5 +48,5 @@ class PgimcodeState(DeepAgentState):
     """
     recent_files: Annotated[list[str], _accumulate_list] = []
     conversation_history: Annotated[list[tuple[str, bool]], _accumulate_history] = []
-    session_mode: str = "build"
-    current_task: str = ""
+    session_mode: Annotated[str, _latest] = "build"
+    current_task: Annotated[str, _latest] = ""

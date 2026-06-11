@@ -9,6 +9,7 @@ from deepagents.backends import CompositeBackend, LocalShellBackend, StateBacken
 from deepagents.middleware.summarization import create_summarization_tool_middleware
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.memory import InMemoryStore
 
 from pgimcode.config import AGENT_MODEL_FIELDS
@@ -289,6 +290,8 @@ def create_orchestrator(settings: "Settings", workspace_root=None, store=None):
         _create_subagent(settings, agent_models["verifier"], VERIFIER_PROMPT, "verifier", "Verifies that code changes are correct and complete. Use after making edits to confirm correctness.", response_format=VerificationResult, **subagent_args),
     ]
 
+    checkpointer = MemorySaver()
+
     agent = create_deep_agent(
         model=model,
         system_prompt=ORCHESTRATOR_PROMPT,
@@ -301,6 +304,7 @@ def create_orchestrator(settings: "Settings", workspace_root=None, store=None):
         context_schema=AgentContext,
         state_schema=PgimcodeState,
         middleware=[DynamicPromptMiddleware(), compaction_middleware],
+        checkpointer=checkpointer,
     )
 
     return agent

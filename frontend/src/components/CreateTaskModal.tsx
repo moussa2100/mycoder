@@ -39,20 +39,34 @@ export default function CreateTaskModal() {
     if (!title.trim()) return;
 
     setIsGenerating(true);
-    const prompt = `You are a task planning assistant. Analyze this task request and create a structured, actionable plan. 
+    setPlanConversation('');
 
-Task Title: ${title}
-Description: ${description || 'No description provided'}
+    // Try the real API first
+    try {
+      const res = await fetch('http://127.0.0.1:8765/api/tasks/plan-temp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: title.trim(),
+          description: description.trim(),
+          model,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPlanConversation(
+          `**You:** Generate a plan for: "${title.trim()}"\n\n---\n\n**Assistant:**\n${data.plan}`
+        );
+        setPlan(data.plan);
+        setIsGenerating(false);
+        return;
+      }
+    } catch {
+      // Backend not available, fall through to simulation
+    }
 
-Provide:
-1. A summary of what needs to be done
-2. Key steps in order
-3. Potential challenges and considerations
-4. Estimated complexity (Low/Medium/High)
-
-Format the response in clear markdown.`;
-
-    // Simulate LLM response with streaming effect
+    // Fallback: simulate LLM response
+    await new Promise((r) => setTimeout(r, 800));
     const simulatedResponse = `## Task Analysis
 
 **Summary:** ${title} — ${description || 'A new task to be implemented.'}
@@ -83,13 +97,44 @@ Ready to proceed with this plan. Would you like any modifications?`;
   const handleSendFeedback = async () => {
     if (!feedbackInput.trim()) return;
 
+    setIsGenerating(true);
+
+    // Try the real API for plan revision
+    try {
+      const res = await fetch('http://127.0.0.1:8765/api/tasks/plan-temp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: title.trim(),
+          description: description.trim(),
+          model,
+          feedback: feedbackInput.trim(),
+          current_plan: plan,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const currentConversation = planConversation;
+        setPlanConversation(
+          currentConversation + `\n\n---\n\n**You:** ${feedbackInput}\n\n---\n\n**Assistant:**\n${data.plan}`
+        );
+        setPlan(data.plan);
+        setFeedbackInput('');
+        setIsGenerating(false);
+        return;
+      }
+    } catch {
+      // Backend not available, fall through to simulation
+    }
+
+    await new Promise((r) => setTimeout(r, 600));
     const currentConversation = planConversation;
     setPlanConversation(
       currentConversation + `\n\n---\n\n**You:** ${feedbackInput}\n\n---\n\n**Assistant:**\n*Updating plan based on your feedback...*\n\nI've revised the plan per your request. The updated approach incorporates your suggestions while maintaining a solid structure. The changes address your concerns and should provide a better path forward.`
     );
-
     setPlan(`[Revised Plan]\n\n${plan}\n\n---\n**Feedback incorporated:** ${feedbackInput}`);
     setFeedbackInput('');
+    setIsGenerating(false);
   };
 
   const handleSave = async () => {
@@ -104,6 +149,7 @@ Ready to proceed with this plan. Would you like any modifications?`;
       status: 'planning',
       model,
       plan,
+      plan_conversation: planConversation,
       stream_response: '',
       created_at: now,
       updated_at: now,
@@ -111,7 +157,26 @@ Ready to proceed with this plan. Would you like any modifications?`;
     };
 
     addTask(newTask);
-    await saveTaskToDB(newTask);
+
+    // Try the real API first
+    try {
+      await fetch('http://127.0.0.1:8765/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: newTask.title,
+          description: newTask.description,
+          model: newTask.model,
+        }),
+      });
+      // Load from API to get the server-generated ID
+      const useAPI = useStore.getState().loadFromAPI;
+      if (useAPI) useAPI();
+    } catch {
+      // Fallback to Electron IPC
+      await saveTaskToDB(newTask);
+    }
+
     close();
   };
 

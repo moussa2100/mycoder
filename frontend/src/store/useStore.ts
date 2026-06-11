@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import type { Task, TaskStatus, ChatMessage, ViewType } from '@/types';
+import * as api from '@/services/api';
 
 function genId(): string {
   return crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2);
@@ -9,6 +10,14 @@ interface AppState {
   // Navigation
   view: ViewType;
   setView: (v: ViewType) => void;
+
+  // Workspace
+  workspaceDir: string;
+  setWorkspaceDir: (dir: string) => void;
+
+  // API availability
+  isBackendAvailable: boolean;
+  setBackendAvailable: (v: boolean) => void;
 
   // Tasks
   tasks: Task[];
@@ -45,22 +54,35 @@ interface AppState {
   setChatMessages: (msgs: ChatMessage[]) => void;
   addChatMessage: (msg: ChatMessage) => void;
 
-  // Streaming (for In Progress task detail)
+  // Streaming
   streamingContent: string;
   setStreamingContent: (v: string) => void;
   appendStreamingContent: (v: string) => void;
+  stopStreaming: (() => void) | null;
+  setStopStreaming: (fn: (() => void) | null) => void;
 
-  // DB sync helpers
+  // DB sync helpers (fallback to Electron IPC)
   loadFromDB: () => Promise<void>;
   saveTaskToDB: (task: Task) => Promise<void>;
   deleteTaskFromDB: (id: string) => Promise<void>;
   loadChatFromDB: () => Promise<void>;
   saveChatToDB: (msg: ChatMessage) => Promise<void>;
+
+  // API sync helpers
+  loadFromAPI: () => Promise<void>;
+  loadChatFromAPI: () => Promise<void>;
+  checkBackendHealth: () => Promise<void>;
 }
 
 export const useStore = create<AppState>((set, get) => ({
   view: 'kanban',
   setView: (v) => set({ view: v }),
+
+  workspaceDir: '',
+  setWorkspaceDir: (dir) => set({ workspaceDir: dir }),
+
+  isBackendAvailable: false,
+  setBackendAvailable: (v) => set({ isBackendAvailable: v }),
 
   tasks: [],
   setTasks: (tasks) => set({ tasks }),
@@ -84,7 +106,12 @@ export const useStore = create<AppState>((set, get) => ({
 
   selectedTaskId: null,
   detailTask: null,
-  openTaskDetail: (task) => set({ detailTask: task, selectedTaskId: task.id, streamingContent: task.stream_response || '' }),
+  openTaskDetail: (task) =>
+    set({
+      detailTask: task,
+      selectedTaskId: task.id,
+      streamingContent: task.stream_response || '',
+    }),
   closeTaskDetail: () => set({ detailTask: null, selectedTaskId: null, streamingContent: '' }),
 
   newTaskTitle: '',
@@ -107,6 +134,10 @@ export const useStore = create<AppState>((set, get) => ({
   streamingContent: '',
   setStreamingContent: (v) => set({ streamingContent: v }),
   appendStreamingContent: (v) => set((s) => ({ streamingContent: s.streamingContent + v })),
+  stopStreaming: null,
+  setStopStreaming: (fn) => set({ stopStreaming: fn }),
+
+  // ── Electron IPC fallback ────────────────────────────────
 
   async loadFromDB() {
     if (!window.electronAPI) return;
@@ -137,6 +168,41 @@ export const useStore = create<AppState>((set, get) => ({
   async saveChatToDB(msg) {
     if (!window.electronAPI) return;
     await window.electronAPI.addChatMessage(msg);
+  },
+
+  // ── API syncing ──────────────────────────────────────────
+
+  async loadFromAPI() {
+    try {
+      const tasks = await api.fetchTasks();
+      set({ tasks, isBackendAvailable: true });
+    } catch {
+      set({ isBackendAvailable: false });
+      get().loadFromDB();
+    }
+  },
+
+  async loadChatFromAPI() {
+    try {
+      const msgs = await api.fetchChatMessages();
+      set({ chatMessages: msgs, isBackendAvailable: true });
+    } catch {
+      set({ isBackendAvailable: false });
+      get().loadChatFromDB();
+    }
+  },
+
+  async checkBackendHealth() {
+    try {
+      const res = await fetch('http://127.0.0.1:8765/api/health');
+      if (res.ok) {
+        set({ isBackendAvailable: true });
+        return;
+      }
+    } catch {
+      // backend not running
+    }
+    set({ isBackendAvailable: false });
   },
 }));
 
