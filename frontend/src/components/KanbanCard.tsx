@@ -15,6 +15,7 @@ export default function KanbanCard({ task }: Props) {
   const saveTaskToDB = useStore((s) => s.saveTaskToDB);
   const deleteTaskFromDB = useStore((s) => s.deleteTaskFromDB);
   const openTaskDetail = useStore((s) => s.openTaskDetail);
+  const runTaskExecution = useStore((s) => s.runTaskExecution);
   const tasks = useStore((s) => s.tasks);
 
   const isInProgress = task.status === 'in-progress';
@@ -22,6 +23,16 @@ export default function KanbanCard({ task }: Props) {
 
   const handleMove = async (to: TaskStatus) => {
     if (!canMoveTo(task.status, to, tasks)) return;
+    setShowMenu(false);
+
+    // Moving to 'in-progress' must actually invoke the agent, not just
+    // update the column. Delegate to the store's runTaskExecution action.
+    if (to === 'in-progress') {
+      openTaskDetail({ ...task, status: 'in-progress' });
+      await runTaskExecution(task);
+      return;
+    }
+
     const updated: Task = {
       ...task,
       status: to,
@@ -33,7 +44,6 @@ export default function KanbanCard({ task }: Props) {
       await apiUpdate(task.id, updated);
     } catch { /* fallback */ }
     await saveTaskToDB(updated);
-    setShowMenu(false);
   };
 
   const handleDelete = async () => {

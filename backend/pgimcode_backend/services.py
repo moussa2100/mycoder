@@ -14,6 +14,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+from pathlib import Path
 
 from pgimcode.agent import RealAgent
 from pgimcode.config import Settings
@@ -24,10 +25,24 @@ _settings: Settings | None = None
 _SENTINEL = object()
 
 
+def _find_repo_env() -> Path | None:
+    """Locate the repo-root .env even when uvicorn runs from backend/."""
+    here = Path(__file__).resolve()
+    for parent in here.parents:
+        candidate = parent / ".env"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _get_settings() -> Settings:
     global _settings
     if _settings is None:
-        _settings = Settings()
+        env_file = _find_repo_env()
+        if env_file is not None:
+            _settings = Settings(_env_file=str(env_file))
+        else:
+            _settings = Settings()
     return _settings
 
 

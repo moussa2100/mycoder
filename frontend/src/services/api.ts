@@ -27,6 +27,65 @@ async function request<T>(
   return res.json() as Promise<T>;
 }
 
+async function readSseStream(
+  res: Response,
+  onChunk: (chunk: string) => void,
+  onDone: (full: string) => void,
+): Promise<void> {
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error('No response body');
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  const dispatch = (frame: string) => {
+    if (!frame.trim()) return;
+    let event = 'message';
+    const dataLines: string[] = [];
+
+    for (const rawLine of frame.split(/\r?\n/)) {
+      if (!rawLine || rawLine.startsWith(':')) continue;
+      const colon = rawLine.indexOf(':');
+      const field = colon === -1 ? rawLine : rawLine.slice(0, colon);
+      let value = colon === -1 ? '' : rawLine.slice(colon + 1);
+      if (value.startsWith(' ')) value = value.slice(1);
+      if (field === 'event') event = value;
+      if (field === 'data') dataLines.push(value);
+    }
+
+    let data = dataLines.join('\n');
+    if (event === 'message') {
+      try {
+        const parsed = JSON.parse(data);
+        event = parsed.event ?? event;
+        data = parsed.data ?? data;
+      } catch {
+        event = 'chunk';
+      }
+    }
+
+    if (event === 'chunk') onChunk(data);
+    if (event === 'done') onDone(data);
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let match = buffer.match(/\r?\n\r?\n/);
+    while (match?.index !== undefined) {
+      dispatch(buffer.slice(0, match.index));
+      buffer = buffer.slice(match.index + match[0].length);
+      match = buffer.match(/\r?\n\r?\n/);
+    }
+  }
+
+  buffer += decoder.decode();
+  dispatch(buffer);
+}
+
 // ── Tasks ──────────────────────────────────────────────────
 
 export async function fetchTasks(status?: TaskStatus): Promise<Task[]> {
@@ -104,36 +163,7 @@ export function generatePlanStream(
     signal: controller.signal,
   })
     .then(async (res) => {
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error('No response body');
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('data:')) {
-            try {
-              const parsed = JSON.parse(line.slice(5).trim());
-              if (parsed.event === 'chunk') {
-                onChunk(parsed.data);
-              } else if (parsed.event === 'done') {
-                onDone(parsed.data);
-              }
-            } catch {
-              // SSE parsing issue, skip
-            }
-          }
-        }
-      }
+      await readSseStream(res, onChunk, onDone);
     })
     .catch((err) => {
       if (err.name !== 'AbortError') onError(err);
@@ -146,7 +176,7 @@ export function generatePlanStream(
 
 export function executeTaskStream(
   taskId: string,
-  data: { model?: string; workspace_dir?: string },
+  data: { task_id?: string; model?: string; workspace_dir?: string },
   onChunk: (chunk: string) => void,
   onDone: (fullOutput: string) => void,
   onError: (err: Error) => void,
@@ -161,36 +191,7 @@ export function executeTaskStream(
     signal: controller.signal,
   })
     .then(async (res) => {
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error('No response body');
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('data:')) {
-            try {
-              const parsed = JSON.parse(line.slice(5).trim());
-              if (parsed.event === 'chunk') {
-                onChunk(parsed.data);
-              } else if (parsed.event === 'done') {
-                onDone(parsed.data);
-              }
-            } catch {
-              // skip
-            }
-          }
-        }
-      }
+      await readSseStream(res, onChunk, onDone);
     })
     .catch((err) => {
       if (err.name !== 'AbortError') onError(err);
@@ -232,36 +233,7 @@ export function sendChatMessageStream(
     signal: controller.signal,
   })
     .then(async (res) => {
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const reader = res.body?.getReader();
-      if (!reader) throw new Error('No response body');
-
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('data:')) {
-            try {
-              const parsed = JSON.parse(line.slice(5).trim());
-              if (parsed.event === 'chunk') {
-                onChunk(parsed.data);
-              } else if (parsed.event === 'done') {
-                onDone(parsed.data);
-              }
-            } catch {
-              // skip
-            }
-          }
-        }
-      }
+      await readSseStream(res, onChunk, onDone);
     })
     .catch((err) => {
       if (err.name !== 'AbortError') onError(err);

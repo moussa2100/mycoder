@@ -72,6 +72,9 @@ interface AppState {
   loadFromAPI: () => Promise<void>;
   loadChatFromAPI: () => Promise<void>;
   checkBackendHealth: () => Promise<void>;
+
+  // Task execution (POST /api/tasks/{id}/execute + SSE)
+  runTaskExecution: (task: Task) => Promise<void>;
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -88,7 +91,10 @@ export const useStore = create<AppState>((set, get) => ({
   setTasks: (tasks) => set({ tasks }),
   addTask: (task) => set((s) => ({ tasks: [...s.tasks, task] })),
   updateTask: (task) =>
-    set((s) => ({ tasks: s.tasks.map((t) => (t.id === task.id ? task : t)) })),
+    set((s) => ({
+      tasks: s.tasks.map((t) => (t.id === task.id ? task : t)),
+      detailTask: s.detailTask?.id === task.id ? task : s.detailTask,
+    })),
   removeTask: (id) => set((s) => ({ tasks: s.tasks.filter((t) => t.id !== id) })),
 
   showCreateModal: false,
@@ -203,6 +209,57 @@ export const useStore = create<AppState>((set, get) => ({
       // backend not running
     }
     set({ isBackendAvailable: false });
+  },
+
+  async runTaskExecution(task) {
+    const s = get();
+
+    // 1. Make sure the task is in 'in-progress' on local store + backend.
+    let current: Task = task;
+    if (current.status !== 'in-progress') {
+      current = { ...current, status: 'in-progress', updated_at: new Date().toISOString() };
+      s.updateTask(current);
+      try {
+        await api.updateTask(current.id, current);
+      } catch (err) {
+        console.warn('[runTaskExecution] status PATCH failed:', err);
+      }
+      await s.saveTaskToDB(current);
+    }
+
+    // 2. Clear any prior stream output and kick off SSE.
+    set({ streamingContent: '' });
+
+    const cancel = api.executeTaskStream(
+      current.id,
+      { task_id: current.id, model: current.model, workspace_dir: s.workspaceDir },
+      (chunk) => set((st) => ({ streamingContent: st.streamingContent + chunk })),
+      async (full) => {
+        const next: Task = {
+          ...current,
+          status: 'in-review',
+          stream_response: full,
+          updated_at: new Date().toISOString(),
+        };
+        get().updateTask(next);
+        try {
+          await api.updateTask(next.id, next);
+        } catch (err) {
+          console.warn('[runTaskExecution] final PATCH failed:', err);
+        }
+        await get().saveTaskToDB(next);
+        set({ stopStreaming: null });
+      },
+      (err) => {
+        console.error('[runTaskExecution] executeTaskStream failed:', err);
+        set((st) => ({
+          streamingContent:
+            st.streamingContent + `\n\n\u26a0\ufe0f Backend error: ${err.message}\n`,
+          stopStreaming: null,
+        }));
+      },
+    );
+    set({ stopStreaming: cancel });
   },
 }));
 

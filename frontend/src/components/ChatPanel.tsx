@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Send, Sparkles, Trash2, User, Bot } from 'lucide-react';
 import { useStore } from '@/store/useStore';
+import * as api from '@/services/api';
 import type { ChatMessage } from '@/types';
 
 const MODELS = [
@@ -15,6 +16,7 @@ export default function ChatPanel() {
   const addChatMessage = useStore((s) => s.addChatMessage);
   const setChatMessages = useStore((s) => s.setChatMessages);
   const saveChatToDB = useStore((s) => s.saveChatToDB);
+  const workspaceDir = useStore((s) => s.workspaceDir);
 
   const [input, setInput] = useState('');
   const [model, setModel] = useState('gemini-3.5-flash');
@@ -39,28 +41,20 @@ export default function ChatPanel() {
     setInput('');
     setIsLoading(true);
 
-    // Try real API
+    // Try real API (absolute URL via api service \u2014 works in Electron + dev)
     try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMsg.content, model }),
+      const assistantMsg = await api.sendChatMessage({
+        message: userMsg.content,
+        model,
+        workspace_dir: workspaceDir,
       });
-      if (res.ok) {
-        const data = await res.json();
-        const assistantMsg: ChatMessage = {
-          id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36),
-          role: 'assistant',
-          content: data.response,
-          model,
-          created_at: new Date().toISOString(),
-        };
-        addChatMessage(assistantMsg);
-        await saveChatToDB(assistantMsg);
-        setIsLoading(false);
-        return;
-      }
-    } catch { /* fallback */ }
+      addChatMessage(assistantMsg);
+      await saveChatToDB(assistantMsg);
+      setIsLoading(false);
+      return;
+    } catch (err) {
+      console.warn('[ChatPanel] api.sendChatMessage failed, using fallback:', err);
+    }
 
     // Fallback: simulate LLM response
     await new Promise((r) => setTimeout(r, 800 + Math.random() * 1200));
@@ -82,6 +76,11 @@ export default function ChatPanel() {
 
   const handleClear = async () => {
     setChatMessages([]);
+    try {
+      await api.clearChat();
+    } catch (err) {
+      console.warn('[ChatPanel] api.clearChat failed:', err);
+    }
     if (window.electronAPI) {
       await window.electronAPI.clearChat();
     }

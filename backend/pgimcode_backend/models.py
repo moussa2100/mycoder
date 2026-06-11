@@ -61,7 +61,6 @@ class PlanResponse(BaseModel):
 
 
 class ExecuteRequest(BaseModel):
-    task_id: str
     model: str = "gemini-3.5-flash"
     workspace_dir: str = ""
 

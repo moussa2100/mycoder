@@ -9,16 +9,18 @@ export function useTaskActions(task: Task | null) {
   const saveTaskToDB = useStore((s) => s.saveTaskToDB);
   const deleteTaskFromDB = useStore((s) => s.deleteTaskFromDB);
   const closeTaskDetail = useStore((s) => s.closeTaskDetail);
-  const setStreamingContent = useStore((s) => s.setStreamingContent);
-  const appendStreamingContent = useStore((s) => s.appendStreamingContent);
-  const setStopStreaming = useStore((s) => s.setStopStreaming);
   const stopStreaming = useStore((s) => s.stopStreaming);
+  const setStopStreaming = useStore((s) => s.setStopStreaming);
   const tasks = useStore((s) => s.tasks);
-  const workspaceDir = useStore((s) => s.workspaceDir);
+  const runTaskExecution = useStore((s) => s.runTaskExecution);
 
   async function persist(next: Task) {
     updateTask(next);
-    try { await api.updateTask(next.id, next); } catch { /* noop */ }
+    try {
+      await api.updateTask(next.id, next);
+    } catch (err) {
+      console.warn('[useTaskActions] api.updateTask failed:', err);
+    }
     await saveTaskToDB(next);
   }
 
@@ -30,29 +32,8 @@ export function useTaskActions(task: Task | null) {
 
   async function startExecution() {
     if (!task) return;
-    if (task.status !== 'in-progress') {
-      if (tasks.some((t) => t.status === 'in-progress' && t.id !== task.id)) return;
-      await moveTo('in-progress');
-    }
-    setStreamingContent('');
-
-    const cancel = api.executeTaskStream(
-      task.id,
-      { model: task.model, workspace_dir: workspaceDir },
-      (chunk) => appendStreamingContent(chunk),
-      async (full) => {
-        const next: Task = {
-          ...task,
-          status: 'in-review',
-          stream_response: full,
-          updated_at: new Date().toISOString(),
-        };
-        await persist(next);
-        setStopStreaming(null);
-      },
-      () => { /* backend unavailable: leave stream empty */ },
-    );
-    setStopStreaming(cancel);
+    if (tasks.some((t) => t.status === 'in-progress' && t.id !== task.id)) return;
+    await runTaskExecution(task);
   }
 
   function stop() {
@@ -71,38 +52,37 @@ export function useTaskActions(task: Task | null) {
 
   async function sendPlanFeedback(feedback: string) {
     if (!task || !feedback.trim()) return;
+    // Use the per-task plan endpoint so the backend persists the revised plan
+    // to the SQLite DB. Falls back to a local-only update if backend is offline.
     try {
-      const res = await fetch('http://127.0.0.1:8765/api/tasks/plan-temp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: task.title,
-          description: task.description,
-          model: task.model,
-          feedback: feedback.trim(),
-          current_plan: task.plan,
-        }),
+      const data = await api.generatePlan(task.id, {
+        title: task.title,
+        description: task.description,
+        model: task.model,
+        feedback: feedback.trim(),
+        current_plan: task.plan,
       });
-      if (res.ok) {
-        const data = await res.json();
-        const next: Task = {
-          ...task,
-          plan: data.plan,
-          plan_conversation: (task.plan_conversation || '') +
+      const next: Task = {
+        ...task,
+        plan: data.plan,
+        plan_conversation: data.conversation ||
+          (task.plan_conversation || '') +
             `\n\n---\n\n**You:** ${feedback}\n\n---\n\n**Assistant:**\n${data.plan}`,
-          updated_at: new Date().toISOString(),
-        };
-        await persist(next);
-        return;
-      }
-    } catch { /* fall through */ }
+        updated_at: new Date().toISOString(),
+      };
+      updateTask(next);
+      await saveTaskToDB(next);
+      return;
+    } catch (err) {
+      console.warn('[useTaskActions] api.generatePlan failed, falling back local:', err);
+    }
 
     const revisedPlan = `[Revised Plan]\n\n${task.plan}\n\n---\n**Feedback incorporated:** ${feedback}`;
     const next: Task = {
       ...task,
       plan: revisedPlan,
       plan_conversation: (task.plan_conversation || '') +
-        `\n\n---\n\n**You:** ${feedback}\n\n---\n\n**Assistant:**\n*Plan updated based on your feedback.*`,
+        `\n\n---\n\n**You:** ${feedback}\n\n---\n\n**Assistant:**\n*Plan updated based on your feedback (offline mode).*`,
       updated_at: new Date().toISOString(),
     };
     await persist(next);

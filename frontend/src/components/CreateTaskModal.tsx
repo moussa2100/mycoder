@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { X, Sparkles, Send, Check, Loader2 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
+import * as api from '@/services/api';
 import type { Task } from '@/types';
 
 const MODELS = [
@@ -41,7 +42,6 @@ export default function CreateTaskModal() {
     setIsGenerating(true);
     setPlanConversation('');
 
-    // Try the real API first
     try {
       const res = await fetch('http://127.0.0.1:8765/api/tasks/plan-temp', {
         method: 'POST',
@@ -52,54 +52,33 @@ export default function CreateTaskModal() {
           model,
         }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        setPlanConversation(
-          `**You:** Generate a plan for: "${title.trim()}"\n\n---\n\n**Assistant:**\n${data.plan}`
-        );
-        setPlan(data.plan);
-        setIsGenerating(false);
-        return;
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Backend ${res.status} ${res.statusText}\n${body}`);
       }
-    } catch {
-      // Backend not available, fall through to simulation
+      const data = await res.json();
+      setPlanConversation(
+        `**You:** Generate a plan for: "${title.trim()}"\n\n---\n\n**Assistant:**\n${data.plan}`
+      );
+      setPlan(data.plan);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[CreateTaskModal] plan-temp failed:', err);
+      setPlanConversation(
+        `ERROR calling POST http://127.0.0.1:8765/api/tasks/plan-temp\n\n${msg}`
+      );
+      setPlan('');
+    } finally {
+      setIsGenerating(false);
     }
-
-    // Fallback: simulate LLM response
-    await new Promise((r) => setTimeout(r, 800));
-    const simulatedResponse = `## Task Analysis
-
-**Summary:** ${title} — ${description || 'A new task to be implemented.'}
-
-### Key Steps
-1. **Research & Analysis** — Understand the requirements and gather context
-2. **Design & Architecture** — Plan the implementation approach
-3. **Implementation** — Write the code following best practices
-4. **Testing** — Verify correctness with appropriate tests
-5. **Review & Refine** — Polish and optimize the solution
-
-### Potential Challenges
-- Edge cases need careful handling
-- Integration with existing codebase should be considered
-- Performance implications should be evaluated
-
-### Complexity: **Medium**
-
----
-
-Ready to proceed with this plan. Would you like any modifications?`;
-
-    setPlanConversation(`**You:** Generate a plan for: "${title}"\n\n---\n\n**Assistant:**\n${simulatedResponse}`);
-    setPlan(simulatedResponse);
-    setIsGenerating(false);
   };
 
   const handleSendFeedback = async () => {
     if (!feedbackInput.trim()) return;
 
     setIsGenerating(true);
+    const currentConversation = planConversation;
 
-    // Try the real API for plan revision
     try {
       const res = await fetch('http://127.0.0.1:8765/api/tasks/plan-temp', {
         method: 'POST',
@@ -112,29 +91,27 @@ Ready to proceed with this plan. Would you like any modifications?`;
           current_plan: plan,
         }),
       });
-      if (res.ok) {
-        const data = await res.json();
-        const currentConversation = planConversation;
-        setPlanConversation(
-          currentConversation + `\n\n---\n\n**You:** ${feedbackInput}\n\n---\n\n**Assistant:**\n${data.plan}`
-        );
-        setPlan(data.plan);
-        setFeedbackInput('');
-        setIsGenerating(false);
-        return;
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`Backend ${res.status} ${res.statusText}\n${body}`);
       }
-    } catch {
-      // Backend not available, fall through to simulation
+      const data = await res.json();
+      setPlanConversation(
+        currentConversation +
+          `\n\n---\n\n**You:** ${feedbackInput}\n\n---\n\n**Assistant:**\n${data.plan}`
+      );
+      setPlan(data.plan);
+      setFeedbackInput('');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[CreateTaskModal] plan-temp (feedback) failed:', err);
+      setPlanConversation(
+        currentConversation +
+          `\n\n---\n\nERROR calling POST http://127.0.0.1:8765/api/tasks/plan-temp\n\n${msg}`
+      );
+    } finally {
+      setIsGenerating(false);
     }
-
-    await new Promise((r) => setTimeout(r, 600));
-    const currentConversation = planConversation;
-    setPlanConversation(
-      currentConversation + `\n\n---\n\n**You:** ${feedbackInput}\n\n---\n\n**Assistant:**\n*Updating plan based on your feedback...*\n\nI've revised the plan per your request. The updated approach incorporates your suggestions while maintaining a solid structure. The changes address your concerns and should provide a better path forward.`
-    );
-    setPlan(`[Revised Plan]\n\n${plan}\n\n---\n**Feedback incorporated:** ${feedbackInput}`);
-    setFeedbackInput('');
-    setIsGenerating(false);
   };
 
   const handleSave = async () => {
@@ -142,7 +119,33 @@ Ready to proceed with this plan. Would you like any modifications?`;
 
     const now = new Date().toISOString();
     const position = tasks.filter((t) => t.status === 'planning').length;
-    const newTask: Task = {
+
+    // Try the real API first: create on backend, then PATCH the plan + conversation.
+    try {
+      const created = await api.createTask({
+        title: title.trim(),
+        description: description.trim(),
+        model,
+      });
+      let serverTask: Task = created;
+      if (plan || planConversation) {
+        try {
+          serverTask = await api.updateTask(created.id, {
+            plan,
+            plan_conversation: planConversation,
+          });
+        } catch {
+          serverTask = { ...created, plan, plan_conversation: planConversation };
+        }
+      }
+      addTask(serverTask);
+      close();
+      return;
+    } catch {
+      // Backend unreachable \u2014 fall back to local-only with a client UUID.
+    }
+
+    const localTask: Task = {
       id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36),
       title: title.trim(),
       description: description.trim(),
@@ -155,28 +158,8 @@ Ready to proceed with this plan. Would you like any modifications?`;
       updated_at: now,
       position,
     };
-
-    addTask(newTask);
-
-    // Try the real API first
-    try {
-      await fetch('http://127.0.0.1:8765/api/tasks', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: newTask.title,
-          description: newTask.description,
-          model: newTask.model,
-        }),
-      });
-      // Load from API to get the server-generated ID
-      const useAPI = useStore.getState().loadFromAPI;
-      if (useAPI) useAPI();
-    } catch {
-      // Fallback to Electron IPC
-      await saveTaskToDB(newTask);
-    }
-
+    addTask(localTask);
+    await saveTaskToDB(localTask);
     close();
   };
 

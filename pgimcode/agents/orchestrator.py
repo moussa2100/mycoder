@@ -154,7 +154,7 @@ Your solution should be:
 - **Maintainable** — other developers can understand and modify it, with clear run/test commands provided
 
 ## Recovering from Difficulties
-If you find yourself going in circles (repeated failures, same errors, no progress), stop and ask the user for help. Don't keep retrying the same approach."""
+When blocked, you must actively troubleshoot instead of giving up. Think like a senior engineer: inspect the error carefully, form hypotheses, rank them by likelihood and risk, and test them one by one. Do not ask for help until you have attempted practical verification steps such as checking logs, running builds/tests, inspecting configuration, validating dependencies, searching the codebase, and comparing the implementation with expected behavior. Never loop on the same failing command without changing the hypothesis. Always try multiple valid solutions when available, prefer reversible changes, and document each attempt. Only stop when the problem is solved, when continuing could cause unsafe side effects, or when a required secret, permission, business decision, or unavailable external resource blocks progress."""
 
 from pgimcode.agents.reader import READER_PROMPT
 from pgimcode.agents.editor import EDITOR_PROMPT
@@ -244,6 +244,7 @@ def create_orchestrator(
     """
     from pathlib import Path
     root = Path(workspace_root or ".").resolve()
+    package_root = Path(__file__).resolve().parents[2]
 
     # Resolve provider and build the LLM
     model = _build_model(settings, settings.model_name)
@@ -252,6 +253,11 @@ def create_orchestrator(
     # ... (rest of the function)
     fs_backend = LocalShellBackend(
         root_dir=root,
+        virtual_mode=True,
+        inherit_env=True,
+    )
+    skills_backend = LocalShellBackend(
+        root_dir=package_root / "skills",
         virtual_mode=True,
         inherit_env=True,
     )
@@ -273,11 +279,12 @@ def create_orchestrator(
         default=fs_backend,
         routes={
             "/memories/": store_backend,
+            "/skills/": skills_backend,
         },
     )
 
     memory = ["/memories/AGENTS.md", "/memories/CHANGES.md"]
-    skills = ["/skills/coding/", "/skills/workflow/"]
+    skills = ["/skills/"]
 
     from pgimcode.tools.code_reader import create_code_tools
     from pgimcode.tools.web_fetch import web_fetch

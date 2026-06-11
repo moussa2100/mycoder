@@ -53,6 +53,20 @@ from .services import generate_plan, execute_task_stream, chat_stream
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: ensure DB is initialized on startup."""
+    # Eagerly resolve settings so the API key source is visible in the log.
+    from .services import _find_repo_env, _get_settings
+
+    env_path = _find_repo_env()
+    settings = _get_settings()
+    has_gemini = bool(settings.gemini_api_key)
+    has_deepseek = bool(settings.deepseek_api_key)
+    has_deepinfra = bool(settings.deepinfra_api_key)
+    print(
+        f"[pgimcode-backend] env_file={env_path or '(none)'}  "
+        f"model_name={settings.model_name}  api_provider={settings.api_provider}  "
+        f"keys: gemini={has_gemini} deepseek={has_deepseek} deepinfra={has_deepinfra}"
+    )
+
     async for db in get_db():
         pass  # Schema is created on first connection
     yield
@@ -65,11 +79,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS - allow Electron renderer
+# CORS - allow Electron renderer.
+# IMPORTANT: with allow_origins=["*"], allow_credentials MUST be False
+# (CORS spec forbids the combination — browsers reject credentialed
+# responses that carry an "Access-Control-Allow-Origin: *" header).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

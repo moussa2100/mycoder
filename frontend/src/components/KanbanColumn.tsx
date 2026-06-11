@@ -27,8 +27,8 @@ export default function KanbanColumn({ status, title, color, icon, tasks }: Prop
   const isQueue = status === 'queue';
   const openCreateModal = useStore((s) => s.openCreateModal);
   const allTasks = useStore((s) => s.tasks);
-  const updateTask = useStore((s) => s.updateTask);
-  const saveTaskToDB = useStore((s) => s.saveTaskToDB);
+  const runTaskExecution = useStore((s) => s.runTaskExecution);
+  const openTaskDetail = useStore((s) => s.openTaskDetail);
 
   const hasInProgress = allTasks.some((t) => t.status === 'in-progress');
   const canStartQueue = isQueue && tasks.length > 0 && !hasInProgress;
@@ -36,17 +36,9 @@ export default function KanbanColumn({ status, title, color, icon, tasks }: Prop
   const handleStartQueue = async () => {
     if (!canStartQueue || tasks.length === 0) return;
     const firstInQueue = tasks[0];
-    const updated: Task = {
-      ...firstInQueue,
-      status: 'in-progress',
-      updated_at: new Date().toISOString(),
-    };
-    updateTask(updated);
-    try {
-      const { updateTask: apiUpdate } = await import('@/services/api');
-      await apiUpdate(updated.id, updated);
-    } catch { /* fallback */ }
-    await saveTaskToDB(updated);
+    // Open the detail modal so the user sees the live progress banner + stream.
+    openTaskDetail({ ...firstInQueue, status: 'in-progress' });
+    await runTaskExecution(firstInQueue);
   };
 
   return (
